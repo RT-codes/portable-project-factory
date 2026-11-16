@@ -307,7 +307,8 @@ test('makes a skill for the repo, with the guide to writing one beside it', asyn
   await page.getByRole('region', { name: 'Change how agents work here' }).getByRole('button', { name: /^Skills/ }).click()
   await expect(panes(page)).toHaveCount(2)
   const guide = panes(page).nth(1)
-  await expect(guide.getByRole('heading', { name: 'Writing a skill' })).toBeVisible()
+  // the panel's own title: the guide under it starts with "Writing a skill for this repo"
+  await expect(guide.getByRole('heading', { name: 'Writing a skill', exact: true })).toBeVisible()
   await expect(guide.getByRole('heading', { name: 'Rule, role or skill?' })).toBeVisible()
   await expect(guide.getByRole('heading', { name: 'The description is the trigger' })).toBeVisible()
   await expect(guide.getByRole('heading', { name: 'Make it specific to this repo' })).toBeVisible()
@@ -322,7 +323,8 @@ test('makes a skill for the repo, with the guide to writing one beside it', asyn
 
   // it starts from the shape the guide describes, open in the editor (which takes the guide's place)
   const file = path.join(fixture.repo, '.factory/skills/add-migration.md')
-  expect(fs.readFileSync(file, 'utf8')).toMatch(/^---\nname: add-migration\ndescription: Use when /)
+  // the app writes it after the click: wait for it rather than read at once
+  await expect.poll(() => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '')).toMatch(/^---\nname: add-migration\ndescription: Use when /)
   for (const section of ['## Steps', '## Watch out', '## Done when']) expect(fs.readFileSync(file, 'utf8')).toContain(section)
   await expect(editor(page, '.factory/skills/add-migration.md').locator('.cm-content')).toContainText('name: add-migration')
   await expect(tree(page, '.factory/skills/add-migration.md')).toBeVisible()
@@ -333,7 +335,7 @@ test('makes a skill for the repo, with the guide to writing one beside it', asyn
 
   // the guide is a click away from the Agents view at any time
   await browser.getByRole('button', { name: 'How to write a skill' }).click()
-  await expect(panes(page).nth(1).getByRole('heading', { name: 'Writing a skill' })).toBeVisible()
+  await expect(panes(page).nth(1).getByRole('heading', { name: 'Writing a skill', exact: true })).toBeVisible()
 
   // a skill can be renamed and deleted like any agent file
   await tree(page, '.factory/skills/add-migration.md').click()
