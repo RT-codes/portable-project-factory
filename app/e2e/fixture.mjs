@@ -337,7 +337,7 @@ function amend(dir, title, change) {
   throw new Error(`no journal entry titled ${title}`)
 }
 
-function sh(cwd, cmd, args, input) {
+function sh(cwd, cmd, args, input, env = {}) {
   return execFileSync(cmd, args, {
     cwd,
     input,
@@ -351,6 +351,7 @@ function sh(cwd, cmd, args, input) {
       GIT_COMMITTER_EMAIL: 'mona@example.com',
       GIT_CONFIG_GLOBAL: '/dev/null',
       GIT_CONFIG_NOSYSTEM: '1',
+      ...env,
     },
   }).trim()
 }
@@ -451,7 +452,8 @@ export function createFixture(dir, { factory = true } = {}) {
 
     // the journal: why things changed, committed on main
     for (const e of journal(a, vatSha)) {
-      cli(['journal', 'add', ...e.args], e.body)
+      // the entry names the agent that wrote it: say which, so it does not depend on where the tests run
+      sh(repo, process.execPath, ['.factory/cli.mjs', 'journal', 'add', ...e.args], e.body, { FACTORY_AGENT: 'claude' })
       // the CLI dates an entry now; these two are older, as if written days and weeks ago
       if (e.at) amend(path.join(repo, '.factory/journal'), e.args[1], (t) => t.replace(/^at: .*$/m, `at: ${e.at}`))
       if (e.gone) amend(path.join(repo, '.factory/journal'), e.args[1], (t) => t.replace(/^commits: .*\n/m, '').replace(/^title: /m, `commits: ["${e.gone}"]\ntitle: `))
