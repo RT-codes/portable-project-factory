@@ -1,0 +1,444 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-svelte/tailwind.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* What a theme can change besides colours (src/desktop/appearance.svelte.ts sets these on <html>). */
+:root {
+	--radius: 0.625rem;
+	/* the width of every border and divider: Tailwind's border utilities read it (--default-border-width below) */
+	--line: 1px;
+	--app-font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+	--app-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+	/* the size of 1rem, so of the whole interface */
+	--ui-size: 16px;
+	--code-size: 12px;
+	/* split panels (src/desktop/PaneArea.svelte): the space between two, and between them and the window's edge */
+	--pane-gap: 8px;
+	--pane-outer: 8px;
+}
+
+/* Light surfaces with a near-black primary; the brand orange lives on in --glow.
+   .theme-light and .dark also work on any element: the appearance settings read a palette's own values that way. */
+:root,
+.theme-light {
+	--background: oklch(0.99 0.002 80);
+	--foreground: oklch(0.17 0.006 50);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.17 0.006 50);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.17 0.006 50);
+	--primary: oklch(0.205 0.006 50);
+	--primary-foreground: oklch(0.985 0 0);
+	--secondary: oklch(0.965 0.004 80);
+	--secondary-foreground: oklch(0.205 0.006 50);
+	--muted: oklch(0.965 0.004 80);
+	--muted-foreground: oklch(0.53 0.012 60);
+	--accent: oklch(0.955 0.01 70);
+	--accent-foreground: oklch(0.205 0.006 50);
+	--destructive: oklch(0.577 0.245 27.325);
+	--border: oklch(0.915 0.005 70);
+	--input: oklch(0.915 0.005 70);
+	--ring: oklch(0.7 0.17 58 / 60%);
+	--glow: oklch(0.72 0.17 58);
+	--code: oklch(0.975 0.004 80);
+	--tone-green: oklch(0.6 0.15 163);
+	--tone-amber: oklch(0.66 0.16 70);
+	--tone-violet: oklch(0.55 0.2 293);
+	--tone-sky: oklch(0.58 0.15 240);
+	--tone-rose: oklch(0.6 0.2 13);
+	--shadow-float: 0 8px 30px -6px rgb(0 0 0 / 0.18);
+}
+
+/* Themis Default: warm near-black surfaces with the brand orange as primary. */
+.dark {
+	--background: oklch(0.145 0.008 50);
+	--foreground: oklch(0.97 0.005 80);
+	--card: oklch(0.19 0.01 50);
+	--card-foreground: oklch(0.97 0.005 80);
+	--popover: oklch(0.19 0.01 50);
+	--popover-foreground: oklch(0.97 0.005 80);
+	--primary: oklch(0.76 0.17 58);
+	--primary-foreground: oklch(0.2 0.02 50);
+	--secondary: oklch(0.25 0.012 50);
+	--secondary-foreground: oklch(0.97 0.005 80);
+	--muted: oklch(0.25 0.012 50);
+	--muted-foreground: oklch(0.7 0.015 70);
+	--accent: oklch(0.27 0.025 55);
+	--accent-foreground: oklch(0.97 0.005 80);
+	--destructive: oklch(0.704 0.191 22.216);
+	--border: oklch(1 0 0 / 9%);
+	--input: oklch(1 0 0 / 13%);
+	--ring: oklch(0.76 0.17 58 / 60%);
+	--glow: oklch(0.76 0.17 58);
+	--code: oklch(0.12 0.006 50);
+	--tone-green: oklch(0.765 0.177 163.223);
+	--tone-amber: oklch(0.828 0.189 84.429);
+	--tone-violet: oklch(0.702 0.183 293.541);
+	--tone-sky: oklch(0.746 0.16 232.661);
+	--tone-rose: oklch(0.712 0.194 13.428);
+	--shadow-float: 0 0 28px 2px rgb(0 0 0 / 0.45);
+}
+
+@theme {
+	--default-border-width: var(--line);
+	--text-sm: 0.8125rem;
+	--text-base: 0.9375rem;
+	--shadow-float: 0 0 28px 2px rgb(0 0 0 / 0.45);
+}
+
+@theme inline {
+	--font-sans: var(--app-font-sans);
+	--font-mono: var(--app-font-mono);
+	--color-glow: var(--glow);
+	--color-code: var(--code);
+	--color-tone-green: var(--tone-green);
+	--color-tone-amber: var(--tone-amber);
+	--color-tone-violet: var(--tone-violet);
+	--color-tone-sky: var(--tone-sky);
+	--color-tone-rose: var(--tone-rose);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--radius-sm: calc(var(--radius) * 0.6);
+	--radius-md: calc(var(--radius) * 0.8);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) * 1.4);
+	--radius-2xl: calc(var(--radius) * 1.8);
+	--radius-3xl: calc(var(--radius) * 2.2);
+	--radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+		scrollbar-width: thin;
+		scrollbar-color: color-mix(in oklab, var(--muted-foreground) 35%, transparent) transparent;
+	}
+	html {
+		@apply bg-background font-sans antialiased;
+		font-size: var(--ui-size);
+		color-scheme: light;
+	}
+	html.dark {
+		color-scheme: dark;
+	}
+	body {
+		@apply bg-background text-base text-foreground;
+	}
+}
+
+@layer components {
+	/* A card with a hint of the brand orange in its top right corner (from Themis): a tinted border fading out, a soft
+	   wash from the corner and a small glow outside it. Only backgrounds and one shadow, so nothing draws over content. */
+	.glow-card {
+		border-color: transparent;
+		background:
+			radial-gradient(240px circle at 100% 0, color-mix(in oklab, var(--glow) 9%, transparent), transparent) padding-box,
+			linear-gradient(var(--card), var(--card)) padding-box,
+			radial-gradient(320px circle at 100% 0, color-mix(in oklab, var(--glow) 65%, transparent), transparent) border-box,
+			linear-gradient(var(--border), var(--border)) border-box;
+		background-origin: border-box;
+		box-shadow: 6px -6px 24px -14px color-mix(in oklab, var(--glow) 20%, transparent);
+	}
+
+	.forge-glow {
+		background:
+			radial-gradient(60% 50% at 50% 0%, color-mix(in oklab, var(--glow) 12%, transparent), transparent 70%),
+			radial-gradient(40% 40% at 90% 100%, color-mix(in oklab, var(--glow) 7%, transparent), transparent 70%);
+	}
+
+	/* Rendered markdown from a ticket's files. */
+	.md {
+		@apply text-sm leading-relaxed text-foreground/90;
+	}
+	.md > * + * {
+		@apply mt-3;
+	}
+	.md h1 {
+		@apply text-lg font-semibold text-foreground;
+	}
+	.md h2 {
+		@apply mt-5 text-sm font-semibold tracking-wide text-foreground uppercase;
+	}
+	.md h3 {
+		@apply mt-4 font-semibold text-foreground;
+	}
+	.md ul {
+		@apply list-disc space-y-1 ps-5 marker:text-muted-foreground;
+	}
+	.md ol {
+		@apply list-decimal space-y-1 ps-5 marker:text-muted-foreground;
+	}
+	.md a {
+		@apply text-primary underline underline-offset-4;
+	}
+	.md code {
+		@apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+	}
+	.md pre {
+		@apply overflow-x-auto rounded-lg border bg-code p-3 font-mono text-xs leading-relaxed;
+	}
+	.md pre code {
+		@apply bg-transparent p-0;
+	}
+	.md blockquote {
+		@apply border-s-2 border-glow/60 ps-3 text-muted-foreground;
+	}
+	.md table {
+		@apply w-full text-left text-xs;
+	}
+	.md th,
+	.md td {
+		@apply border-b px-2 py-1.5;
+	}
+	.md hr {
+		@apply border-border;
+	}
+}
+
+/* Lucide icons a touch lighter than the default stroke, as in Themis. */
+svg.lucide {
+	stroke-width: 1.75px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		transition-duration: 0.01ms !important;
+	}
+}
+
+/* ------------------------------------------------------------------ the desktop app: code and diffs */
+
+/* Highlighted code. Each token carries its colour inline (src/desktop/lib/highlight.ts). */
+.code {
+	--code-line: calc(var(--code-size) + 8px);
+	font-family: var(--font-mono);
+	font-size: var(--code-size);
+	line-height: var(--code-line);
+	tab-size: 4;
+	font-variant-ligatures: none;
+}
+
+/* A diff line: the tint of the whole line, a stronger tint on its numbers, and the strongest on what changed. */
+.diff-add {
+	background: color-mix(in oklab, var(--tone-green) 11%, transparent);
+}
+.diff-del {
+	background: color-mix(in oklab, var(--tone-rose) 12%, transparent);
+}
+.diff-add .num {
+	background: color-mix(in oklab, var(--tone-green) 7%, transparent);
+	color: color-mix(in oklab, var(--tone-green) 85%, var(--foreground));
+}
+.diff-del .num {
+	background: color-mix(in oklab, var(--tone-rose) 7%, transparent);
+	color: color-mix(in oklab, var(--tone-rose) 85%, var(--foreground));
+}
+.diff-add .chg {
+	background: color-mix(in oklab, var(--tone-green) 30%, transparent);
+	border-radius: 2px;
+}
+.diff-del .chg {
+	background: color-mix(in oklab, var(--tone-rose) 32%, transparent);
+	border-radius: 2px;
+}
+
+/* Markdown that came from GitHub: images and the HTML it allows. */
+.md-github img {
+	@apply inline-block h-auto max-w-full rounded-md;
+}
+.md-github details {
+	@apply rounded-md border px-3 py-2;
+}
+.md-github summary {
+	@apply cursor-pointer font-medium;
+}
+.md-github kbd {
+	@apply rounded border bg-muted px-1 font-mono text-[0.85em];
+}
+.md-github input[type='checkbox'] {
+	@apply me-1.5 align-middle accent-primary;
+}
+.md-github li:has(> input[type='checkbox']) {
+	@apply list-none;
+}
+.md-github {
+	overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ cut corners (a theme's choice) */
+
+/* <html data-cut="tl br"> cuts those corners of every panel instead of rounding them: the corner's radius becomes
+   the size of the cut and corner-shape its form, so borders, fills, shadows and clipping all follow it.
+   Panels are what Tailwind's larger radii mark (rounded-lg and up); the t/b variants are the headers and bodies
+   that sit inside one. These rules are outside any layer on purpose: they must win over the radius utilities. */
+:root {
+	--cut-size: 12px;
+	--cut-shape: bevel;
+}
+html[data-cut~='tl'] :is(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-t-lg, .rounded-t-xl) {
+	border-top-left-radius: var(--cut-size);
+	corner-top-left-shape: var(--cut-shape);
+}
+html[data-cut~='tr'] :is(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-t-lg, .rounded-t-xl) {
+	border-top-right-radius: var(--cut-size);
+	corner-top-right-shape: var(--cut-shape);
+}
+html[data-cut~='br'] :is(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-b-lg, .rounded-b-xl) {
+	border-bottom-right-radius: var(--cut-size);
+	corner-bottom-right-shape: var(--cut-shape);
+}
+html[data-cut~='bl'] :is(.rounded-lg, .rounded-xl, .rounded-2xl, .rounded-b-lg, .rounded-b-xl) {
+	border-bottom-left-radius: var(--cut-size);
+	corner-bottom-left-shape: var(--cut-shape);
+}
+/* Buttons and fields too, when the theme asks: at half the size, they are small. */
+html[data-cut-controls][data-cut~='tl'] :is(.rounded-md, [data-slot='button']) {
+	border-top-left-radius: calc(var(--cut-size) / 2);
+	corner-top-left-shape: var(--cut-shape);
+}
+html[data-cut-controls][data-cut~='tr'] :is(.rounded-md, [data-slot='button']) {
+	border-top-right-radius: calc(var(--cut-size) / 2);
+	corner-top-right-shape: var(--cut-shape);
+}
+html[data-cut-controls][data-cut~='br'] :is(.rounded-md, [data-slot='button']) {
+	border-bottom-right-radius: calc(var(--cut-size) / 2);
+	corner-bottom-right-shape: var(--cut-shape);
+}
+html[data-cut-controls][data-cut~='bl'] :is(.rounded-md, [data-slot='button']) {
+	border-bottom-left-radius: calc(var(--cut-size) / 2);
+	corner-bottom-left-shape: var(--cut-shape);
+}
+
+/* ------------------------------------------------------------------ the editor (CodeMirror, src/desktop/components/Editor.svelte) */
+
+.editor .cm-editor {
+	height: 100%;
+	background: var(--background);
+	color: var(--foreground);
+	font-size: var(--code-size);
+}
+.editor .cm-editor.cm-focused {
+	outline: none;
+}
+.editor .cm-scroller {
+	font-family: var(--font-mono);
+	line-height: calc(var(--code-size) + 8px);
+}
+.editor .cm-content {
+	padding: 12px 0;
+	caret-color: var(--glow);
+}
+.editor .cm-line {
+	padding: 0 16px 0 8px;
+}
+.editor .cm-gutters {
+	border-right: var(--line) solid var(--border);
+	background: var(--background);
+	color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+}
+.editor .cm-activeLine,
+.editor .cm-activeLineGutter {
+	background: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+.editor .cm-cursor {
+	border-left-color: var(--glow);
+}
+.editor .cm-selectionBackground,
+.editor .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground,
+.editor .cm-content ::selection {
+	background: color-mix(in oklab, var(--primary) 28%, transparent);
+}
+.editor .cm-matchingBracket {
+	background: color-mix(in oklab, var(--tone-green) 25%, transparent);
+	outline: none;
+}
+.editor .cm-searchMatch {
+	background: color-mix(in oklab, var(--tone-amber) 35%, transparent);
+}
+.editor .cm-panels {
+	border-color: var(--border);
+	background: var(--card);
+	color: var(--foreground);
+}
+.editor .cm-panels input,
+.editor .cm-panels button {
+	border: var(--line) solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--background);
+	background-image: none;
+	color: inherit;
+	font: inherit;
+}
+.editor .cm-tooltip {
+	border: var(--line) solid var(--border);
+	background: var(--popover);
+	color: var(--popover-foreground);
+}
+.editor .cm-foldPlaceholder {
+	border-color: var(--border);
+	background: var(--muted);
+	color: var(--muted-foreground);
+}
+/* syntax: the theme's own tones, so the editor follows any theme */
+.editor .tok-heading {
+	color: var(--glow);
+	font-weight: 600;
+}
+.editor .tok-keyword,
+.editor .tok-atom,
+.editor .tok-bool {
+	color: var(--tone-violet);
+}
+.editor .tok-string,
+.editor .tok-string2 {
+	color: var(--tone-green);
+}
+.editor .tok-number {
+	color: var(--tone-amber);
+}
+.editor .tok-propertyName,
+.editor .tok-labelName {
+	color: var(--tone-sky);
+}
+.editor .tok-link,
+.editor .tok-url {
+	color: var(--tone-sky);
+	text-decoration: underline;
+}
+.editor .tok-comment,
+.editor .tok-meta,
+.editor .tok-punctuation {
+	color: var(--muted-foreground);
+}
+.editor .tok-emphasis {
+	font-style: italic;
+}
+.editor .tok-strong {
+	font-weight: 700;
+}
+.editor .tok-monospace {
+	color: var(--tone-amber);
+}

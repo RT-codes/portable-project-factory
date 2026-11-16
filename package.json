@@ -1,0 +1,24 @@
+{
+  "name": "portable-project-factory",
+  "version": "1.0.0",
+  "description": "Installs the Factory workflow into a git repo: a ticket pipeline for any coding agent, a journal of why things changed, and the Factory desktop app.",
+  "type": "module",
+  "bin": {
+    "portable-project-factory": "install.mjs"
+  },
+  "files": [
+    "install.mjs",
+    "LICENSE",
+    "kit/AGENTS.block.md",
+    "kit/.factory/",
+    "kit/.claude/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test kit/test/"
+  },
+  "license": "Apache-2.0",
+  "private": true
+}

@@ -1,0 +1,86 @@
+# The desktop app (app/) and the kit it is installed with (kit/): checks on pull requests that touch them, archives
+# on a tag.
+#
+#   git tag app-v1.0.0 && git push origin app-v1.0.0     builds the Linux, Windows and macOS archives and attaches
+#                                                         them to a draft release
+# The archives need no admin rights to install (the kit's CLI unpacks them by name). They are not code-signed:
+# macOS and Windows will warn on first launch.
+name: desktop app
+
+on:
+  pull_request:
+    paths: ['app/**', 'kit/**', 'install.mjs', 'package.json', '.github/workflows/desktop.yml']
+  push:
+    tags: ['app-v*']
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: The kit's tests
+        working-directory: .
+        run: npm test
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: app/test-results
+          retention-days: 7
+
+  package:
+    if: github.event_name != 'pull_request'
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      # no signing identity to look for: the archives are unsigned
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      # the targets are in app/package.json: tar.gz (x64, arm64) on Linux, zip (x64) on Windows, zip (arm64, x64) on macOS
+      - run: npm run dist -- --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: factory-${{ matrix.os }}
+          path: |
+            app/release/Factory-*.tar.gz
+            app/release/Factory-*.zip
+          if-no-files-found: error
+      - name: Attach to a draft release
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "Factory ${GITHUB_REF_NAME#app-v}" --notes "" || true
+          shopt -s nullglob
+          gh release upload "$GITHUB_REF_NAME" release/Factory-*.tar.gz release/Factory-*.zip --clobber

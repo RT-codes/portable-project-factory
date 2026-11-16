@@ -1,0 +1,6 @@
+# Factory state that stays on this machine. Everything else in .factory/ is meant to be committed.
+jobs/
+worktrees/
+local.json
+run/
+cache/

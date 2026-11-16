@@ -1,0 +1,68 @@
+{
+  "name": "Factory",
+  "base_branch": "main",
+  "concurrency": 2,
+  "max_rounds": 3,
+  "checks": [],
+  "check_timeout_s": 1800,
+  "agent_timeout_s": 3600,
+  "roles": {
+    "planner": { "model": "default", "effort": "default" },
+    "builder": { "model": "default", "effort": "default" },
+    "reviewer": { "model": "default", "effort": "default" }
+  },
+  "journal": { "recent": 5, "titles": 20 },
+  "stages": [
+    {
+      "key": "inbox",
+      "label": "Inbox",
+      "icon": "inbox",
+      "description": "New tickets, waiting for a free slot.",
+      "next": { "plan": null }
+    },
+    {
+      "key": "plan",
+      "label": "Plan",
+      "icon": "notebook-pen",
+      "description": "The planner turns the ticket into a concrete plan.",
+      "role": "planner",
+      "output": "plan.md",
+      "next": { "build": "READY" }
+    },
+    {
+      "key": "build",
+      "label": "Build",
+      "icon": "hammer",
+      "description": "The builder implements the plan on the ticket's branch.",
+      "role": "builder",
+      "output": "build.md",
+      "starts_round": true,
+      "next": { "check": "READY" }
+    },
+    {
+      "key": "check",
+      "label": "Check",
+      "icon": "shield-check",
+      "description": "The checks in config.json run on the branch. No reviewer sees a failing build.",
+      "run": "checks",
+      "output": "round-{round}/checks.md",
+      "next": { "review": "PASS", "build": "FAIL" }
+    },
+    {
+      "key": "review",
+      "label": "Review",
+      "icon": "scan-eye",
+      "description": "The reviewer reads the diff against the plan and records why the change was made.",
+      "role": "reviewer",
+      "output": "round-{round}/review.md",
+      "next": { "done": "PASS", "build": "CHANGES" }
+    },
+    {
+      "key": "done",
+      "label": "Done",
+      "icon": "circle-check",
+      "description": "Reviewed, journaled, and ready for you to merge.",
+      "terminal": true
+    }
+  ]
+}
