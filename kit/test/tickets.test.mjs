@@ -193,3 +193,59 @@ test('concurrent creates get distinct numbers', async () => {
   const ids = await Promise.all([1, 2, 3, 4, 5, 6].map(one))
   assert.equal(new Set(ids.map((id) => id.slice(0, 3))).size, 6)
 })
+
+test('delete removes the ticket, its worktree and its branch, and the journal says so', () => {
+  const { dir, env } = factoryRepo()
+  cli(dir, ['new', 'Thing'], { env })
+  const id = '001-thing'
+  cli(dir, ['advance', '1', 'plan'], { env })
+  write(dir, id, 'plan.md', 'READY\n')
+  cli(dir, ['advance', '1', 'build'], { env })
+  const wt = path.join(dir, '.factory', 'worktrees', id)
+  fs.writeFileSync(path.join(wt, 'thing.txt'), 'half done\n')
+  git(wt, 'add', '-A')
+  git(wt, 'commit', '-q', '-m', 'Half a thing')
+  fs.writeFileSync(path.join(wt, 'more.txt'), 'never committed\n')
+
+  let r = cli(dir, ['delete', '1'], { env })
+  assert.match(r.err, /say why, for the journal/)
+  r = cli(dir, ['delete', '1', '-m', 'The', 'customer', 'cancelled', 'it'], { env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(r.out, /001-thing: deleted \(1 unmerged commit discarded\)/)
+  assert.equal(fs.existsSync(jobDir(dir, id)), false)
+  assert.equal(fs.existsSync(wt), false)
+  assert.equal(git(dir, 'branch', '--list', `factory/${id}`), '')
+  assert.doesNotMatch(git(dir, 'worktree', 'list'), /001-thing/)
+  assert.match(cli(dir, ['show', '1'], { env }).err, /no ticket '1'/)
+
+  // what is gone can still be found: by whoever reads the journal, and by an agent loading its context
+  const entry = lastLine(cli(dir, ['journal', 'list'], { env }).out)
+  assert.match(entry, /decision\s+Deleted ticket 001: Thing/)
+  const text = cli(dir, ['journal', 'show', entry.split(/\s+/)[0]], { env }).out
+  assert.match(text, /ticket: 001-thing/)
+  assert.match(text, /was deleted for good while it was in Build, round 1/)
+  assert.match(text, /\(1 commit, tip [0-9a-f]+\) was not merged into main: that work was discarded/)
+  assert.match(text, /## Why\nThe customer cancelled it/)
+  assert.match(cli(dir, ['context'], { env }).out, /Deleted ticket 001: Thing/)
+  assert.match(cli(dir, ['recall', 'deleted', 'thing'], { env }).out, /Deleted ticket 001/)
+
+  // its number is not handed out again
+  assert.equal(lastLine(cli(dir, ['new', 'Another'], { env }).out), '002-another')
+  // a ticket with no branch yet goes too
+  r = cli(dir, ['delete', '2', '-m', 'filed twice'], { env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(cli(dir, ['journal', 'show', lastLine(r.out).match(/entry (\S+)/)[1]], { env }).out, /It had no branch yet/)
+})
+
+test('a ticket a run is working cannot be deleted from under it', async () => {
+  const { dir, env } = factoryRepo({ script: { planner: [{ say: 'READY', sleep: 3000 }] } })
+  cli(dir, ['new', 'Thing'], { env })
+  assert.equal(cli(dir, ['run', '--detach'], { env }).code, 0)
+  try {
+    for (let i = 0; i < 100 && JSON.parse(cli(dir, ['show', '1'], { env }).out).stage !== 'plan'; i++) await new Promise((r) => setTimeout(r, 50))
+    assert.match(cli(dir, ['delete', '1', '-m', 'changed my mind'], { env }).err, /a run is working 001-thing .*`cancel` the run first/)
+  } finally {
+    cli(dir, ['cancel'], { env })
+  }
+  assert.equal(cli(dir, ['delete', '1', '-m', 'changed my mind'], { env }).code, 0)
+})

@@ -338,12 +338,22 @@ function isOpen(job) {
   return job.stage !== BLOCKED && job.stage !== DROPPED && !ctx().stages[job.stage]?.terminal
 }
 
+/** The highest number a deleted ticket had (jobs/.last): numbers only go up. */
+function lastDeleted() {
+  try {
+    return Number(fs.readFileSync(path.join(ctx().jobs, '.last'), 'utf8')) || 0
+  } catch {
+    return 0
+  }
+}
+
 function createTicket(title, body) {
   title = title.trim()
   if (!title) refuse('a ticket needs a title: new <title>')
   const { jobs, order } = ctx()
   return withLock(() => {
-    const n = Math.max(0, ...fs.readdirSync(jobs).map(ticketNumber).filter((x) => x !== null)) + 1
+    // a deleted ticket's number is not handed out again: the journal still speaks of it
+    const n = Math.max(0, lastDeleted(), ...fs.readdirSync(jobs).map(ticketNumber).filter((x) => x !== null)) + 1
     const id = `${String(n).padStart(3, '0')}-${slug(title)}`
     const dir = path.join(jobs, id)
     fs.mkdirSync(dir)
@@ -440,6 +450,171 @@ function drop(ref, reason) {
     save(dir, job)
     return job
   })
+}
+
+/**
+ * Delete a ticket for good: its folder, its worktree and its branch. Unlike `drop`, nothing of it stays on the
+ * board, so the journal gets an entry that says what was deleted and why: whoever works here next, a person or
+ * an agent, can still find out that it existed and what became of its work.
+ */
+function deleteTicket(ref, reason) {
+  const { repo, jobs, config, stages, order } = ctx()
+  return withLock(() => {
+    const { dir, job } = load(ref)
+    const run = currentRun()
+    if (run && isOpen(job) && job.stage !== order[0]) refuse(`a run is working ${job.id} (pid ${run.pid}): \`cancel\` the run first`)
+    const had = git(['rev-parse', '--verify', '-q', `refs/heads/${job.branch}`], repo).ok && !!job.branch
+    const tip = had ? git(['rev-parse', '--short', job.branch], repo).out.trim() : null
+    const commits = had ? gitLines(['rev-list', `${config.base_branch}..${job.branch}`], repo).length : 0
+    const merged = had && git(['merge-base', '--is-ancestor', job.branch, config.base_branch], repo).ok
+    if (job.worktree) {
+      const wt = path.join(repo, job.worktree)
+      // --force: work that was never committed goes with the ticket, which is what deleting it means
+      if (fs.existsSync(wt) && !git(['worktree', 'remove', '--force', wt], repo).ok) fs.rmSync(wt, { recursive: true, force: true })
+      git(['worktree', 'prune'], repo)
+    }
+    if (had) {
+      const r = git(['branch', '-D', job.branch], repo)
+      if (!r.ok) refuse(`could not delete the branch ${job.branch}: ${r.err}`)
+    }
+    fs.writeFileSync(path.join(jobs, '.last'), String(Math.max(job.number, lastDeleted())))
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    const number = String(job.number).padStart(3, '0')
+    const where = job.stage === BLOCKED ? `blocked (from ${stages[job.blocked_from]?.label || job.blocked_from || '?'})` : stages[job.stage]?.label || job.stage
+    const work = !had
+      ? 'It had no branch yet: no code was written for it.'
+      : commits === 0
+        ? `Its branch \`${job.branch}\` had no commits of its own; the branch and its worktree were removed.`
+        : merged
+          ? `Its branch \`${job.branch}\` (${commits} ${commits === 1 ? 'commit' : 'commits'}, tip ${tip}) was already merged into ${config.base_branch}; the branch and its worktree were removed.`
+          : `Its branch \`${job.branch}\` (${commits} ${commits === 1 ? 'commit' : 'commits'}, tip ${tip}) was not merged into ${config.base_branch}: that work was discarded with the branch and its worktree.`
+    const at = nowZ()
+    const host = process.env.FACTORY_STAGE ? null : chooseAgent(process.env, {}, () => false)
+    const meta = {
+      id: entryId(`Deleted ticket ${number}`, at, [repo]),
+      at,
+      title: `Deleted ticket ${number}: ${job.title}`,
+      kind: 'decision',
+      ticket: job.id,
+      branch: null,
+      commits: [],
+      files: [],
+      tags: ['deleted', 'ticket'],
+      by: host ? { agent: host } : null,
+      // what it took before it was deleted was still spent
+      ...(usageRows(job).length ? { usage: usageRows(job) } : {}),
+    }
+    const file = writeEntry(repo, meta, `## What changed\nTicket ${number} ("${job.title}") was deleted for good while it was in ${where}, round ${job.round}. ${work}\n\n## Why\n${reason.trim()}`)
+    return { job, entry: meta.id, file, commits, merged }
+  })
+}
+
+// ---------------------------------------------------------------- landing
+//
+// A finished ticket is on its own branch, made from the base branch as it was when the build started. Landing
+// brings it into the base branch as that is now: the base is merged into the ticket's branch, the checks run on
+// the result, and only then does the base branch move (fast-forward, so it never holds anything unchecked).
+// One ticket lands at a time: each landing changes what the next one has to fit.
+// What does not fit goes back to the pipeline, not to a special case: the ticket returns to its build stage with
+// the conflict (or the failing checks) written down, and the builder, the checks and the reviewer do their work.
+
+function landLock() {
+  const file = path.join(ctx().factory, 'run', 'land.lock')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  for (let i = 0; i < 2; i++) {
+    try {
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx' })
+      return () => fs.rmSync(file, { force: true })
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      const pid = Number(fs.readFileSync(file, 'utf8')) || 0
+      if (pid && isAlive(pid)) refuse(`another ticket is landing (pid ${pid}): one at a time`)
+      fs.rmSync(file, { force: true })
+    }
+  }
+  refuse('could not take the landing lock')
+}
+
+/** Back to the build stage, with what has to be dealt with written where the builder is told to look. */
+function sendBack(ref, title, text) {
+  const { config, stages } = ctx()
+  return withLock(() => {
+    const { dir, job } = load(ref)
+    const n = fs.readdirSync(dir).filter((f) => /^feedback-.*\.md$/.test(f)).length + 1
+    fs.writeFileSync(path.join(dir, `feedback-${n}.md`), `# ${title}\n\n${text.trim()}\n`)
+    const build = config.stages.find((s) => s.starts_round)
+    const src = job.stage
+    if (!build || job.round >= config.max_rounds) {
+      job.blocked_from = build ? build.key : src
+      job.stage = BLOCKED
+      job.blocked_reason = `${title} (feedback-${n}.md)${build ? `, and all ${config.max_rounds} rounds are used` : ''}. Resolve it in ${job.worktree}, then \`unblock\`.`
+      log(job, 'blocked', job.blocked_reason, { from: src, to: BLOCKED })
+    } else {
+      job.round += 1
+      job.stage = build.key
+      log(job, 'moved', `${title}: back to ${stages[build.key].label} (feedback-${n}.md)`, { from: src, to: build.key })
+    }
+    save(dir, job)
+    return job
+  })
+}
+
+async function land(ref, say) {
+  const { repo, config, stages } = ctx()
+  const base = config.base_branch
+  const { job } = load(ref)
+  if (!stages[job.stage]?.terminal) refuse(`${job.id} is in ${job.stage}: only a finished ticket lands`)
+  if (job.landed) refuse(`${job.id} has landed already (${job.landed.sha})`)
+  if (!job.branch || !job.worktree) refuse(`${job.id} has no branch to land`)
+  const wt = worktreePath(job)
+  if (!fs.existsSync(wt)) refuse(`${job.id}'s worktree ${job.worktree} is gone`)
+  if (git(['status', '--porcelain'], wt).out.trim()) refuse(`${job.worktree} has uncommitted changes: commit or discard them first`)
+  const release = landLock()
+  try {
+    const baseTip = git(['rev-parse', base], repo).out.trim()
+    // the base moved since the ticket branched: the ticket takes it in, and has to hold with it
+    if (!git(['merge-base', '--is-ancestor', baseTip, 'HEAD'], wt).ok) {
+      say(`${job.id}: ${base} has moved; merging it into ${job.branch}`)
+      const m = git(['merge', '--no-edit', '-m', `Merge ${base} into ${job.branch}`, baseTip], wt)
+      if (!m.ok) {
+        const files = gitLines(['diff', '--name-only', '--diff-filter=U'], wt)
+        // the merge is left as it stands: the files hold both sides between conflict markers
+        const j = sendBack(job.id, `Conflicts with ${base}`, `Landing this ticket merged \`${base}\` into its branch, and these files conflict:\n\n${files.map((f) => `- \`${f}\``).join('\n')}\n\nThe merge is in progress in the worktree: each file holds both sides between conflict markers. Resolve every one so that both changes keep working (read \`git log ${base}\` for what the other side did and why), remove the markers, and leave the result in the worktree or commit it. Then run the checks.`)
+        say(`${job.id}: ${files.length} ${files.length === 1 ? 'file conflicts' : 'files conflict'} with ${base} → ${j.stage}${j.stage === BLOCKED ? '' : ` (round ${j.round}); \`run\` has the builder resolve it`}`)
+        return { landed: false, stage: j.stage }
+      }
+      say(`${job.id}: running the checks on the merged result`)
+      const c = await checksIn(wt)
+      if (c.failed) {
+        const j = sendBack(job.id, `The checks fail with ${base} merged in`, `Landing this ticket merged \`${base}\` into its branch without conflicts, but the checks fail on the result:\n\n\`\`\`\n${c.out.join('\n')}\n\`\`\`\n\nThe merge is committed on the branch. Fix what fails; the whole output is in \`.factory/cache/checks.log\` in the worktree.`)
+        say(`${job.id}: the checks fail with ${base} merged in → ${j.stage}${j.stage === BLOCKED ? '' : ` (round ${j.round})`}`)
+        return { landed: false, stage: j.stage }
+      }
+    }
+    const tip = git(['rev-parse', 'HEAD'], wt).out.trim()
+    // move the base branch: in the checkout that has it open (git refuses if that would overwrite work there),
+    // or as a ref when no checkout has it
+    const open = gitLines(['worktree', 'list', '--porcelain'], repo).join('\n').split('\n\n').map((b) => ({ dir: /^worktree (.+)$/m.exec(b)?.[1], branch: /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] })).find((w) => w.branch === base)
+    const r = open ? git(['merge', '--ff-only', tip], open.dir) : git(['fetch', '-q', '.', `${tip}:refs/heads/${base}`], repo)
+    if (!r.ok) refuse(`could not move ${base} to ${job.branch}: ${r.err.split('\n').slice(0, 3).join(' ')}`)
+    // the ticket's work is in the base branch now: its worktree and branch have done their job
+    if (!git(['worktree', 'remove', '--force', wt], repo).ok) fs.rmSync(wt, { recursive: true, force: true })
+    git(['worktree', 'prune'], repo)
+    git(['branch', '-D', job.branch], repo)
+    const done = withLock(() => {
+      const { dir, job: j } = load(job.id)
+      j.landed = { at: now(), sha: tip.slice(0, 7), into: base }
+      delete j.worktree
+      log(j, 'landed', `Landed in ${base} (${j.landed.sha})`)
+      save(dir, j)
+      return j
+    })
+    say(`${done.id}: landed in ${base} (${done.landed.sha})`)
+    return { landed: true, stage: done.stage }
+  } finally {
+    release()
+  }
 }
 
 function addNote(ref, text) {
@@ -620,6 +795,55 @@ async function runChecks(ref) {
   return result
 }
 
+/**
+ * The repo's checks, for whoever is working in a checkout (a builder in its worktree, a person): what passed in a
+ * line each, what failed with the end of its output, and the whole output in a file. An agent that reads a
+ * thousand lines of passing tests pays for every one of them, on every later turn; this way it reads what it
+ * needs, and nothing is hidden: the file has all of it.
+ */
+async function checksIn(root) {
+  const { config } = ctx()
+  const checks = config.checks || []
+  const logFile = path.join(root, '.factory', 'cache', 'checks.log')
+  const out = []
+  if (!checks.length) return { failed: false, out: ['No checks are configured (`checks` in .factory/config.json).'], logFile }
+  fs.mkdirSync(path.dirname(logFile), { recursive: true })
+  const fd = fs.openSync(logFile, 'w')
+  let failed = false
+  const deadline = Date.now() + (config.check_timeout_s || 1800) * 1000
+  for (const cmd of checks) {
+    const from = fs.fstatSync(fd).size
+    fs.writeSync(fd, `\n$ ${cmd}\n`)
+    const t0 = Date.now()
+    const r = await runProcess(cmd, [], { cwd: root, logFd: fd, timeoutMs: Math.max(1000, deadline - Date.now()), shell: true })
+    const secs = ((Date.now() - t0) / 1000).toFixed(1)
+    const code = r.timedOut ? 124 : r.code ?? 1
+    if (code === 0) {
+      out.push(`ok    ${cmd} (${secs}s)`)
+      continue
+    }
+    failed = true
+    const lines = fs.readFileSync(logFile, 'utf8').slice(from).trim().split(/\r?\n/).slice(1)
+    const tail = lines.slice(-CHECK_TAIL)
+    out.push(`FAIL  ${cmd} (exit ${code}${r.timedOut ? ', timed out' : ''}, ${secs}s)${lines.length > tail.length ? `, the last ${tail.length} of ${lines.length} lines:` : ':'}`)
+    out.push(tail.join('\n'))
+    break
+  }
+  fs.closeSync(fd)
+  return { failed, out, logFile }
+}
+
+async function cmdChecks() {
+  const r = await checksIn(checkoutRoot())
+  for (const line of r.out) say(line)
+  if (!(ctx().config.checks || []).length) return
+  const relLog = posix(path.relative(process.cwd(), r.logFile)) || r.logFile
+  say(`The whole output: ${relLog}${r.failed ? ' (search it for the first error rather than running the checks again)' : ''}`)
+  say(`CHECKS: ${r.failed ? 'FAIL' : 'PASS'}`)
+  if (r.failed) process.exitCode = 1
+}
+const CHECK_TAIL = 60
+
 // ---------------------------------------------------------------- agents
 
 /** Which agent CLI runs the stages: explicit choice, then the one we are inside, then whatever is installed. */
@@ -727,7 +951,11 @@ export function runFacts(agent, stdout) {
         // the price of the tokens at API rates: on a subscription it is a measure of usage, not a bill
         if (Number.isFinite(ev.total_cost_usd)) facts.cost_usd = Math.round(ev.total_cost_usd * 1000) / 1000
         const u = ev.usage || {}
-        const tokens = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens].reduce((n, v) => n + (Number.isFinite(v) ? v : 0), 0)
+        // kept apart as well as summed: a token read from the cache costs about a tenth of a fresh one, so the
+        // sum alone cannot say what a run cost
+        const parts = { input: u.input_tokens, cache_read: u.cache_read_input_tokens, cache_write: u.cache_creation_input_tokens, output: u.output_tokens }
+        for (const [k, v] of Object.entries(parts)) if (Number.isFinite(v) && v > 0) facts[k] = v
+        const tokens = Object.values(parts).reduce((n, v) => n + (Number.isFinite(v) ? v : 0), 0)
         if (tokens > 0) facts.tokens = tokens
       }
     }
@@ -868,6 +1096,67 @@ function commitLeftovers(job, round) {
   return r.ok ? null : `could not commit the builder's changes: ${r.err}`
 }
 
+/**
+ * Why a stage's agent stopped, when the work is not to blame: a usage limit (a subscription's window, a rate
+ * limit), or the service not answering. Null for everything else. A limit says when it resets when the agent
+ * CLI does (Claude Code reports it in a `rate_limit_event`).
+ */
+export function stopReason(agent, stdout, text) {
+  let until = null
+  let rejected = false
+  if (agent === 'claude') {
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!line.includes('"rate_limit_event"')) continue
+      try {
+        const info = JSON.parse(line).rate_limit_info
+        if (info?.status === 'rejected') {
+          rejected = true
+          if (Number.isFinite(info.resetsAt)) until = info.resetsAt * 1000
+        }
+      } catch {}
+    }
+  }
+  if (rejected || /\b(usage|rate|session|weekly|5-hour) limits?\b|limit reached|hit your limit|out of (extra )?usage|too many requests/i.test(text)) return { kind: 'limit', until }
+  if (/overloaded|\b(500|502|503|529)\b|service unavailable|ECONNRESET|ETIMEDOUT|ENOTFOUND|network error|connection error/i.test(text)) return { kind: 'unavailable', until: null }
+  return null
+}
+
+// A run that meets a limit does not fail its tickets: it waits, all of it, and takes them up again. The wait is
+// the run's, not a ticket's: every ticket draws on the same limit.
+const WAIT_LIMIT_MS = 15 * 60_000
+const WAIT_UNAVAILABLE_MS = 2 * 60_000
+const WAIT_MAX_MS = 6 * 3600_000
+const MAX_UNAVAILABLE = 3
+let waitUntil = 0
+const unavailable = new Map()
+
+function patchRun(patch) {
+  const file = runFile()
+  const info = readJson(file, null)
+  if (!info || info.pid !== process.pid) return
+  const next = { ...info, ...patch }
+  for (const k of Object.keys(next)) if (next[k] === null && k === 'waiting') delete next[k]
+  writeAtomic(file, JSON.stringify(next, null, 2))
+}
+
+/** Hold every stage until `until`. Says so in the run's file, where `status` and the app read it. */
+function holdRun(until, reason) {
+  if (until <= waitUntil) return
+  waitUntil = until
+  patchRun({ waiting: { until: new Date(until).toISOString(), reason } })
+}
+
+async function gate() {
+  let waited = false
+  while (Date.now() < waitUntil) {
+    waited = true
+    await new Promise((r) => setTimeout(r, Math.min(1000, waitUntil - Date.now())))
+  }
+  if (waited) patchRun({ waiting: null })
+}
+
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+
 async function runAgentStage(ref, say) {
   const { config, stages, repo, local } = ctx()
   const { dir, job } = withLock(() => load(ref))
@@ -887,6 +1176,9 @@ async function runAgentStage(ref, say) {
   fs.rmSync(finalFile, { force: true })
   const args = [...pre, ...agentArgs({ agent, role, model, effort, cwd, jobDir: dir, finalFile })]
   const prompt = buildPrompt(dir, job, stageKey, role)
+  // a limit met by another ticket holds this one too
+  await gate()
+  const startedAt = Date.now()
   say(`${job.id}: ${role} started (${asked}, round ${job.round})`)
   const fd = fs.openSync(logFile, 'w')
   fs.writeSync(fd, `[factory] ${new Date().toISOString()} ${agent} ${args.slice(pre.length).join(' ')}\n[factory] cwd: ${cwd}\n\n`)
@@ -930,8 +1222,35 @@ async function runAgentStage(ref, say) {
   }
   fs.rmSync(finalFile, { force: true })
   if (!failure && !final.trim()) failure = 'it returned no final message'
+  // what the run took is recorded whether it worked or not: a failed stage was paid for too
+  const spent = { stage: stageKey, round: startRound, role, by, agent, secs: Math.round((Date.now() - startedAt) / 1000), ...(effort !== 'default' && !facts.effort ? { effort } : {}), ...facts }
   if (failure) {
-    const j = blockQuietly(ref, `${role} (${by}) failed: ${failure}. Log: ${logRel}`)
+    const stop = stopReason(agent, agent === 'claude' ? r.stdout || '' : '', `${failure}\n${logged.split(/\r?\n/).slice(-15).join('\n')}`)
+    const tries = stop?.kind === 'unavailable' ? (unavailable.get(job.id) || 0) + 1 : 0
+    // FACTORY_WAIT_MS: a fixed wait, for the tests
+    const fixed = Number(process.env.FACTORY_WAIT_MS) || 0
+    const until = !stop ? 0 : fixed ? Date.now() + fixed : stop.kind === 'unavailable' ? Date.now() + WAIT_UNAVAILABLE_MS : stop.until && stop.until > Date.now() ? stop.until + 30_000 : Date.now() + WAIT_LIMIT_MS
+    if (stop && tries <= MAX_UNAVAILABLE && until - Date.now() <= WAIT_MAX_MS) {
+      // not the ticket's fault: it keeps its stage, the run waits, and the stage is run again
+      unavailable.set(job.id, tries)
+      const why = stop.kind === 'limit' ? 'a usage limit was reached' : 'the agent\'s service did not answer'
+      holdRun(until, stop.kind === 'limit' ? 'usage limit' : 'service unavailable')
+      withLock(() => {
+        const { dir: d, job: j } = load(ref)
+        log(j, 'waiting', `${stage.label} stopped: ${why} (${by}). The run tries again at ${clock(until)}.`, { result: 'WAIT', ...spent })
+        save(d, j)
+      })
+      say(`${job.id}: ${role} stopped (${why}); waiting until ${clock(until)}`)
+      await gate()
+      return
+    }
+    withLock(() => {
+      const { dir: d, job: j } = load(ref)
+      log(j, 'agent', `${stage.label} (${by}) failed: ${failure}`, { result: 'ERROR', ...spent })
+      save(d, j)
+    })
+    const limited = stop?.kind === 'limit' && stop.until ? ` The limit resets ${new Date(stop.until).toLocaleString()}: \`unblock\` it then.` : ''
+    const j = blockQuietly(ref, `${role} (${by}) failed: ${failure}.${limited} Log: ${logRel}`)
     if (j) say(`${job.id}: ${role} failed → blocked (${failure})`)
     return
   }
@@ -958,7 +1277,8 @@ async function runAgentStage(ref, say) {
   const got = verdict(text)
   withLock(() => {
     const { dir: d, job: j } = load(ref)
-    log(j, 'agent', `${stage.label} (${by}): ${firstLine(text).slice(0, 200)}`, { result: got, role, by, agent, ...(effort !== 'default' && !facts.effort ? { effort } : {}), ...facts })
+    unavailable.delete(job.id)
+    log(j, 'agent', `${stage.label} (${by}): ${firstLine(text).slice(0, 200)}`, { result: got, ...spent })
     save(d, j)
   })
   const dst = Object.entries(stage.next || {}).find(([, need]) => need === got)?.[0]
@@ -1024,7 +1344,10 @@ async function runPipeline({ ref, once, say }) {
   const target = ref ? load(ref).job.id : null
   const active = new Map()
   const stuck = new Map()
-  const signature = (j) => `${j.stage}|${j.round}|${j.updated_at}`
+  // landings queue up: one at a time
+  let landing = Promise.resolve()
+  // the activity's length too: times are kept to the second, and a step can do its work within one
+  const signature = (j) => `${j.stage}|${j.round}|${j.updated_at}|${j.activity.length}`
   const step = (job) => {
     const stage = stages[job.stage]
     if (job.stage === order[0] || (!stage.role && !stage.run)) {
@@ -1059,6 +1382,15 @@ async function runPipeline({ ref, once, say }) {
           const msg = e instanceof Refusal ? e.message : e.stack || String(e)
           blockQuietly(job.id, `the factory could not run ${job.stage}: ${msg.split('\n')[0]}`)
           say(`${job.id}: ${job.stage} → blocked (${msg.split('\n')[0]})`)
+        })
+        .then(async () => {
+          // opt-in (config.json "auto_land"): a ticket that finishes lands at once, for work that should keep moving
+          const now = allJobs().find((j) => j.id === job.id)
+          if (config.auto_land && now && stages[now.stage]?.terminal && !now.landed && !stages[job.stage]?.terminal) {
+            await landing
+            landing = land(job.id, say).catch((e) => say(`${job.id}: not landed (${e instanceof Refusal ? e.message : String(e).split('\n')[0]})`))
+            await landing
+          }
         })
         .then(() => {
           // A step that changed nothing must not be retried forever in this run.
@@ -1199,6 +1531,22 @@ function notJournal(files) {
   return files.filter((f) => !f.startsWith('.factory/journal/'))
 }
 
+/**
+ * What a ticket's stages took, for its journal entry: one short row per agent run, so the cost of a change
+ * travels with the change (and with nothing else: no file of its own, nothing to merge).
+ * A row is [stage, round, agent:model, result, seconds, turns, input, cache read, cache write, output, cost in USD];
+ * a number the agent did not report is 0. Codex reports one total: it is under input.
+ */
+export const USAGE_COLUMNS = ['stage', 'round', 'by', 'result', 'secs', 'turns', 'input', 'cache_read', 'cache_write', 'output', 'cost_usd']
+export function usageRows(job) {
+  return job.activity
+    .filter((a) => (a.kind === 'agent' || a.kind === 'waiting') && a.by)
+    .map((a) => {
+      const split = a.input || a.cache_read || a.cache_write || a.output
+      return [a.stage || a.role || '', a.round ?? 0, a.by, a.result || '', a.secs || 0, a.turns || 0, split ? a.input || 0 : a.tokens || 0, a.cache_read || 0, a.cache_write || 0, a.output || 0, a.cost_usd || 0]
+    })
+}
+
 function commitTicketJournal(dir, job) {
   const { config, repo } = ctx()
   const draftFile = path.join(dir, 'journal.md')
@@ -1215,9 +1563,11 @@ function commitTicketJournal(dir, job) {
   // Facts come from git and the ticket, never from an agent.
   const by = {}
   for (const a of job.activity) if (a.kind === 'agent' && a.role && a.by) by[a.role] = a.by
+  // a ticket that finishes a second time (it came back from landing) keeps its one entry, brought up to date
+  const before = job.entry && fs.existsSync(path.join(wt, job.entry.file)) ? job.entry : null
   const meta = {
-    id: entryId(draft.title, at, [wt, repo]),
-    at,
+    id: before ? before.id : entryId(draft.title, at, [wt, repo]),
+    at: before ? before.at : at,
     title: draft.title,
     kind: draft.kind,
     ticket: job.id,
@@ -1226,9 +1576,12 @@ function commitTicketJournal(dir, job) {
     files: notJournal(gitLines(['diff', '--name-only', `${base}...HEAD`], wt)),
     tags: draft.tags,
     by,
+    usage: usageRows(job),
   }
+  if (!meta.usage.length) delete meta.usage
   const file = writeEntry(wt, meta, draft.body)
   const relFile = posix(path.relative(wt, file))
+  job.entry = { id: meta.id, at: meta.at, file: relFile }
   let r = git(['add', '--', relFile], wt)
   if (r.ok) r = git(['commit', '-q', '-m', `Journal: ${meta.title}\n\nFactory ticket ${job.id}.`, '--', relFile], wt)
   if (!r.ok) {
@@ -1507,7 +1860,7 @@ export function buildContext({ name, rules, tickets, run, entries, skills = [], 
   if (blocked.length || done.length) {
     L.push('Waiting on the user:')
     L.push(...capped(blocked, 8, (t) => `  - ${t.id}: blocked: ${clip(t.blocked_reason || '', 140)}`))
-    L.push(...capped(done, 5, (t) => `  - ${t.id}: done, ${t.branch || 'its branch'} is ready to merge`))
+    L.push(...capped(done, 5, (t) => `  - ${t.id}: done, ${t.branch || 'its branch'} is ready to land (\`land ${t.id.split('-')[0]}\`)`))
   }
   L.push(run ? `Run: in progress (pid ${run.pid}, since ${run.started_at})` : 'Run: none in progress')
   L.push('')
@@ -1823,9 +2176,14 @@ Tickets
   note <id> <text...>                add a line to a ticket's activity
   block <id> -m <reason>             park a ticket for a human
   unblock <id> [<stage>] [-m <note>] back to the stage it was blocked in, or to <stage>
-  drop <id> -m <reason>              close a ticket without doing it
+  drop <id> -m <reason>              close a ticket without doing it (it stays, with its branch)
+  land <id>                          bring a finished ticket into the base branch: merges the base into it, runs the
+                                     checks on the result, then moves the base branch; what conflicts goes back to build
+  delete <id> -m <reason>            remove a ticket for good, with its worktree and branch; the journal records it
   advance <id> <stage> [-m <note>]   move a ticket by hand; refused unless config.json and its files allow it
   check <id>                         run the checks for a ticket in its check stage; prints CHECK: PASS or FAIL
+  checks                             run the checks in the checkout you are in: a line per check that passes, the
+                                     end of the output of one that fails, all of it in .factory/cache/checks.log
 
 Pipeline
   run [<id>] [--once] [--detach]     work open tickets through their stages, concurrency at a time
@@ -1863,6 +2221,7 @@ function requireId(args, usage) {
 
 // A finished ticket waits on the user until its branch is merged into the base branch.
 function isMerged(job) {
+  if (job.landed) return true
   return !!job.branch && !!ctx().stages[job.stage]?.terminal && git(['merge-base', '--is-ancestor', job.branch, ctx().config.base_branch], ctx().repo).ok
 }
 
@@ -1933,6 +2292,8 @@ function cmdCancel() {
   say(isAlive(info.pid) ? `Asked the run (pid ${info.pid}) to stop; it is still shutting down.` : `Stopped the run (pid ${info.pid}). Tickets stay where they are; \`run\` resumes them.`)
 }
 
+const waitingLine = (run) => (run?.waiting ? `The run is waiting (${run.waiting.reason}) and goes on at ${clock(Date.parse(run.waiting.until))}.` : null)
+
 function printStatus(json) {
   const s = statusData()
   if (json) {
@@ -1941,6 +2302,7 @@ function printStatus(json) {
   }
   const { stages } = ctx()
   say(`${s.tickets.length} ticket${s.tickets.length === 1 ? '' : 's'}. ${s.run ? `Run in progress (pid ${s.run.pid}, since ${s.run.started_at}${s.run.log ? `, log ${posix(path.relative(process.cwd(), s.run.log))}` : ''}).` : 'No run in progress.'}`)
+  if (waitingLine(s.run)) say(waitingLine(s.run))
   if (s.in_progress.length) {
     say('In progress:')
     for (const t of s.in_progress) say(`  ${t.id.padEnd(32)} ${t.stage.padEnd(10)} r${t.round}  ${t.title}`)
@@ -1948,7 +2310,7 @@ function printStatus(json) {
   if (s.waiting.length) {
     say('Waiting on you:')
     for (const t of s.waiting) {
-      const why = t.stage === BLOCKED ? t.blocked_reason : stages[t.stage]?.terminal ? `${t.branch || 'branch'} is ready to merge` : ''
+      const why = t.stage === BLOCKED ? t.blocked_reason : stages[t.stage]?.terminal ? `${t.branch || 'branch'} is ready to land (\`land ${t.id.split('-')[0]}\`)` : ''
       say(`  ${t.id.padEnd(32)} ${t.stage.padEnd(10)} ${why}`)
     }
   }
@@ -2067,6 +2429,17 @@ const COMMANDS = {
     if (!a.m) refuse('say why: drop <id> -m <reason>')
     say(`${drop(id, a.m).id}: dropped`)
   },
+  async land(argv) {
+    await land(requireId(parseArgs(argv), 'land <id>'), say)
+  },
+  delete(argv) {
+    const a = parseArgs(argv, { message: true })
+    const id = requireId(a, 'delete <id> -m <reason>')
+    if (!a.m || !a.m.trim()) refuse('say why, for the journal: delete <id> -m <reason>')
+    const d = deleteTicket(id, a.m)
+    say(`${d.job.id}: deleted${d.commits && !d.merged ? ` (${d.commits} unmerged ${d.commits === 1 ? 'commit' : 'commits'} discarded)` : ''}`)
+    say(`Journal entry ${d.entry} says so (${posix(path.relative(process.cwd(), d.file)) || d.file}, not committed).`)
+  },
   advance(argv) {
     const a = parseArgs(argv, { message: true })
     if (a._.length !== 2) refuse('usage: advance <id> <stage> [-m <note>]')
@@ -2077,6 +2450,7 @@ const COMMANDS = {
   async check(argv) {
     say(`CHECK: ${await runChecks(requireId(parseArgs(argv), 'check <id>'))}`)
   },
+  checks: () => cmdChecks(),
   run: (argv) => cmdRun(parseArgs(argv, { bool: ['once', 'detach'] })),
   cancel: () => cmdCancel(),
   context(argv) {

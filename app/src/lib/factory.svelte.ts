@@ -7,8 +7,10 @@ export interface FactorySource {
   file(job: string, path: string): Promise<string>
 }
 
-// The factory's state, polled. Polling pauses while the window is hidden.
+// The factory's state, polled. Polling pauses while the window is hidden, and quickens while a run is alive:
+// what a run does is worth seeing as it happens.
 const POLL_MS = 2500
+const POLL_RUNNING_MS = 1000
 
 class Factory {
   state = $state<FactoryState | null>(null)
@@ -16,7 +18,7 @@ class Factory {
   lastOk = $state<number | null>(null)
   // there is no source until a project is open
   #source: FactorySource | null = null
-  #timer: ReturnType<typeof setInterval> | null = null
+  #timer: ReturnType<typeof setTimeout> | null = null
 
   /** Read from another source (the desktop app switches project this way). What was shown is dropped. */
   use(source: FactorySource) {
@@ -47,12 +49,17 @@ class Factory {
   }
 
   start() {
-    void this.refresh()
-    this.#timer = setInterval(() => !document.hidden && this.refresh(), POLL_MS)
+    let stopped = false
+    const loop = async () => {
+      if (!document.hidden) await this.refresh()
+      if (!stopped) this.#timer = setTimeout(loop, this.state?.run ? POLL_RUNNING_MS : POLL_MS)
+    }
+    void loop()
     const onVisible = () => !document.hidden && this.refresh()
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      if (this.#timer) clearInterval(this.#timer)
+      stopped = true
+      if (this.#timer) clearTimeout(this.#timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
   }

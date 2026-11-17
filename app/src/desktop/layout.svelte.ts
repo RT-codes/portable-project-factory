@@ -35,7 +35,7 @@ export interface Rect {
 export type Side = 'left' | 'right' | 'top' | 'bottom'
 
 export const MAX_PANES = 8
-const VIEWS: View[] = ['home', 'board', 'activity', 'changes', 'pulls', 'issues', 'code', 'history', 'journal', 'agents', 'edit', 'guide', 'models', 'settings']
+const VIEWS: View[] = ['home', 'board', 'activity', 'changes', 'pulls', 'issues', 'code', 'history', 'journal', 'usage', 'agents', 'edit', 'guide', 'models', 'settings']
 const STORE = 'factory-layout:'
 
 // ids count up, so sorting panels by id is the order they were made in

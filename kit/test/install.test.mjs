@@ -26,7 +26,7 @@ test('install writes the kit and nothing else', () => {
     '.factory/version',
     'AGENTS.md',
   ])
-  assert.match(read(dir, '.factory/version'), /^1\.0\.0\n/)
+  assert.match(read(dir, '.factory/version'), /^1\.1\.0\n/)
   assert.equal(read(dir, '.factory/.gitignore'), read(ROOT, 'kit/.factory/gitignore'))
   assert.match(read(dir, '.claude/CLAUDE.md'), /^<!-- factory:start -->\n@\.\.\/AGENTS\.md\n<!-- factory:end -->\n$/)
   assert.match(read(dir, 'AGENTS.md'), /FACTORY ROLE:/)

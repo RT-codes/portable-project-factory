@@ -157,7 +157,7 @@ test('reads what a run really used from the agent\'s own output', async () => {
     JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' }),
     JSON.stringify({ type: 'result', subtype: 'success', num_turns: 4, total_cost_usd: 0.75412, usage: { input_tokens: 8, cache_read_input_tokens: 100, cache_creation_input_tokens: 20, output_tokens: 72 } }),
   ].join('\n')
-  assert.deepEqual(runFacts('claude', claude), { model: 'claude-sonnet-5-5', turns: 4, cost_usd: 0.754, tokens: 200 })
+  assert.deepEqual(runFacts('claude', claude), { model: 'claude-sonnet-5-5', turns: 4, cost_usd: 0.754, input: 8, cache_read: 100, cache_write: 20, output: 72, tokens: 200 })
   const codex = 'OpenAI Codex v0.167.2\n--------\nmodel: gpt-6.1-sol\nprovider: openai\nreasoning effort: medium\n--------\nuser\nhi\ntokens used\n8,214\n'
   assert.deepEqual(runFacts('codex', codex), { model: 'gpt-6.1-sol', effort: 'medium', tokens: 8214 })
   // an agent that reports nothing leaves nothing

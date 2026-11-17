@@ -31,7 +31,7 @@
 		issues: 'Issues',
 		code: 'Code',
 		history: 'History',
-		journal: 'Journal',
+		journal: 'Journal', usage: 'Usage',
 		agents: 'Agents',
 		edit: 'Editor',
 		guide: 'Guide',

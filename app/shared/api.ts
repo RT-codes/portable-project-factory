@@ -231,6 +231,33 @@ export interface JournalSection {
   body: string
 }
 
+/** One run of an agent on one stage of a ticket, and what it took. */
+export interface UsageRun {
+  ticket: string
+  title: string
+  /** open: on the board; done: finished here, not merged; merged: only its journal entry is left; dropped; deleted */
+  state: 'open' | 'done' | 'merged' | 'dropped' | 'deleted'
+  /** ISO time: when the run ended (for a ticket known only from the journal: when its entry was written) */
+  at: string
+  stage: string
+  round: number
+  agent: string
+  model: string
+  /** the stage's verdict (READY, PASS, CHANGES), ERROR for a run that failed, WAIT for one stopped by a limit */
+  result: string
+  secs: number
+  turns: number
+  /** tokens, by kind: one read from the cache costs about a tenth of a fresh one */
+  input: number
+  cache_read: number
+  cache_write: number
+  output: number
+  /** tokens of a run that only reported a total (Codex, and runs recorded before the kinds were kept apart) */
+  unsplit: number
+  /** at API prices, as the agent reported it: 0 when it did not (Codex) */
+  cost_usd: number
+}
+
 /** One entry of .factory/journal/: why something changed, written when a ticket finished (or by hand). */
 export interface JournalEntry {
   id: string
@@ -473,8 +500,21 @@ export interface Api {
   factoryInstall(project: string): Promise<string>
   /** files a ticket through the repo's factory CLI; resolves to its id */
   factoryCreate(project: string, title: string, body: string): Promise<string>
+  /** starts a run of the factory in the background: it works every open ticket until none is left to work */
+  factoryRun(project: string): Promise<void>
+  /** stops the run; tickets stay where they are, and the next run takes them up again */
+  factoryPause(project: string): Promise<void>
+  /**
+   * brings a finished ticket into the base branch (the base is merged into it and the checks run first); resolves
+   * to what happened, in a sentence: it landed, or it went back to the pipeline and why
+   */
+  factoryLand(project: string, job: string): Promise<string>
+  /** removes a ticket for good, with its worktree and branch; the journal records it, with the reason */
+  factoryDelete(project: string, job: string, reason: string): Promise<void>
   /** the journal's entries, newest first; empty when there is none. Entries that cannot be read are left out. */
   journal(project: string): Promise<JournalEntry[]>
+  /** every agent run the factory knows of: the tickets on this machine, and the journal's record of the others */
+  usage(project: string): Promise<UsageRun[]>
   /** the factory's health check, run through its CLI */
   doctor(project: string): Promise<Doctor>
   modelSettings(project: string): Promise<ModelSettings>

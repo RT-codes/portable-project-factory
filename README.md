@@ -46,7 +46,7 @@ If someone gave you this page and asked you to install the factory, do this:
 
 ## 🚀 Use it
 
-Any agent that starts in the repo reads `AGENTS.md` and knows what to do, so you can simply say what you want built. Or drive it yourself:
+Any agent that starts in the repo reads `AGENTS.md` and becomes the factory's orchestrator: say what you want built, and it files the tickets, starts the run and tells you what needs you. Or drive it yourself, from the app (Run, Pause) or a terminal:
 
 ```bash
 node .factory/cli.mjs new "Add a dark mode toggle to settings"
@@ -81,12 +81,13 @@ A ticket moves through **plan, build, check, review**. When it is done it is rev
 |---|---|
 | **Home** | What needs you, the numbers, the latest changes and why, setup, and where to change how agents work. |
 | **Activity** | Pull requests, issues and the history in a strip, over the board. |
-| **Board** | The tickets, live. A ticket's branch opens in the diff viewer. |
+| **Board** | The tickets, live. While a run works a ticket, its card shows the stage, the time it has taken and the agent's latest step; its sheet follows the agent step by step. A ticket's branch opens in the diff viewer. |
 | **Changes** | The uncommitted work, or any branch against the base branch, as a diff, a graph, or both. |
 | **Pull requests** | Review: diff, comments on lines sent as one review, threads, checks, merge. |
 | **Issues** | Read, comment, close, create. *Send to factory* files one as a ticket. |
 | **Code** | The project's files, highlighted. |
-| **History** | The commits as a graph, with branches, tags and every worktree. |
+| **History** | The commits as a graph, with branches, tags and every worktree. Work that is not committed yet, and tickets a run is working, are drawn too, so the graph grows as the work does. |
+| **Usage** | What the agent runs took: cost and tokens per day, by model, by stage and by ticket, with how much of it went to work that was redone or thrown away. |
 | **Journal** | Why things changed: a timeline, searchable, linked to commits and files. |
 | **Agents** | The files agents read (rules, roles, skills, `AGENTS.md`), with an editor. |
 

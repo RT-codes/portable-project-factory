@@ -247,6 +247,25 @@ every entry (ranked by word match over titles, tags, files and prose) and
 `journal show <id>` prints one whole. So the detail is there when asked for,
 and not before.
 
+## Landing, limits and what it cost
+
+- **Landing.** A ticket that is done sits on its own branch. `land <id>` (or
+  *Land* in the app) merges the base branch into it if the base has moved,
+  runs the checks on the result, and only then fast-forwards the base branch;
+  the worktree and the branch are removed. One ticket lands at a time. A
+  ticket that conflicts, or whose checks fail with the base merged in, goes
+  back to its build stage with the reason in a `feedback-<n>.md`, and the
+  pipeline deals with it. `"auto_land": true` in `config.json` lands every
+  ticket as it finishes. Landing never pushes.
+- **Limits.** When an agent stops at a usage limit, the ticket keeps its stage
+  and the whole run waits until the limit resets, then runs the stage again
+  (`status` and the app say until when). A service that does not answer is
+  tried again three times before the ticket is blocked.
+- **What it cost.** Every agent run is recorded with its model, its time and
+  its tokens by kind. A finished or deleted ticket carries these as a `usage`
+  line in its journal entry, so they travel with the change; the app's Usage
+  view adds them up.
+
 ## The CLI
 
 `node .factory/cli.mjs <command>`, the same in every shell. `help` prints this:
@@ -255,8 +274,11 @@ and not before.
 new <title...> [--body <text>]     create a ticket (prints its id)
 list | show <id> | status          what is where, what waits on you
 note | block | unblock | drop | advance | check     move tickets by hand
+land <id>                          bring a finished ticket into the base branch
+delete <id> -m <reason>            remove a ticket for good; the journal records it
 run [<id>] [--once] [--detach]     work the tickets through their stages
 cancel                             stop a background run
+checks                             run the repo's checks here: failures in short, all of it in a file
 context [--for <path>]...          what to load before work
 journal add | list | show          the journal
 recall <words or a path>           find why something changed
@@ -507,7 +529,7 @@ uncommitted work, and a factory with tickets. `e2e/fake-gh.mjs` stands in for
 `gh`, answers from a JSON file and records every call, so tests assert exactly
 what would have gone to GitHub and nothing reaches the real one.
 
-**Releasing the app**: `git tag app-v1.0.0 && git push origin app-v1.0.0`.
+**Releasing the app**: `git tag app-v1.1.0 && git push origin app-v1.1.0`.
 `.github/workflows/desktop.yml` runs the kit's and the app's tests, builds a
 `tar.gz` for Linux and a `zip` for Windows and macOS (plain archives: nothing
 that asks for admin rights), and attaches them to a draft release. The CLI

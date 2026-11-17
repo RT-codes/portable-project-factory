@@ -5,7 +5,7 @@ import { api, message } from './api'
 import { layout } from './layout.svelte'
 
 /** 'edit' is the editor of one agent file, opened from Agents; 'models' is opened from Home. Neither is in the sidebar. */
-export type View = 'home' | 'board' | 'activity' | 'changes' | 'pulls' | 'issues' | 'code' | 'history' | 'journal' | 'agents' | 'edit' | 'guide' | 'models' | 'settings'
+export type View = 'home' | 'board' | 'activity' | 'changes' | 'pulls' | 'issues' | 'code' | 'history' | 'journal' | 'usage' | 'agents' | 'edit' | 'guide' | 'models' | 'settings'
 
 /** What the Changes view compares. The default is the uncommitted work in the checkout. */
 export interface ChangeSource {

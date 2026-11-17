@@ -5,6 +5,7 @@
 // FAKE_SCRIPT is a JSON file: { "<role>": [step, step, ...] }, one step per call (the last one repeats).
 // A step is the final message as a string, or an object:
 //   { "say": "<final message>", "write": { "<file in cwd>": "<content>" }, "commit": true, "exit": 1, "sleep": 100 }
+//   { "limit": true }      stop the way Claude Code does at a usage limit; { "overloaded": true }: the service is down
 // FAKE_STATE is a folder for the per-role call counters; FAKE_LOG gets one JSON line per call.
 
 import { execFileSync } from 'node:child_process'
@@ -36,6 +37,13 @@ for (const [file, content] of Object.entries(step.write || {})) {
 if (step.commit) {
   execFileSync('git', ['add', '-A'])
   execFileSync('git', ['commit', '-q', '-m', `fake ${role} ${n + 1}`])
+}
+if (step.limit || step.overloaded) {
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'fake-sonnet-1' }))
+  if (step.limit) console.log(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: Math.floor(Date.now() / 1000) + 3600, rateLimitType: 'five_hour' } }))
+  const result = step.limit ? "You've hit your session limit" : 'API Error: 529 Overloaded'
+  console.log(JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result, num_turns: 1, total_cost_usd: 0.002, usage: { input_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 0, output_tokens: 2 } }))
+  process.exit(1)
 }
 if (step.exit) {
   console.error(`fake ${role}: failing with ${step.exit}`)

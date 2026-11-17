@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Api, GithubRepo, ProjectInfo } from '../shared/api'
 import * as factory from './factory'
+import { usage } from './usage'
 import * as files from './files'
 import * as git from './git'
 import * as github from './github'
@@ -87,7 +88,12 @@ const api: Api = {
   factoryFile: (project, job, file) => factory.factoryFile(p(project), job, file),
   factoryInstall: (project) => factory.factoryInstall(p(project), INSTALLER),
   factoryCreate: (project, title, body) => factory.factoryCreate(p(project), title, body),
+  factoryRun: (project) => factory.factoryRun(p(project)),
+  factoryPause: (project) => factory.factoryPause(p(project)),
+  factoryLand: (project, job) => factory.factoryLand(p(project), job),
+  factoryDelete: (project, job, reason) => factory.factoryDelete(p(project), job, reason),
   journal: (project) => factory.journal(p(project)),
+  usage: (project) => usage(p(project)),
   doctor: (project) => factory.doctor(p(project), VERSION),
   modelSettings: (project) => factory.modelSettings(p(project)),
   saveLocalSettings: (project, local) => factory.saveLocalSettings(p(project), local),

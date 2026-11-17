@@ -4,7 +4,7 @@
 //   node e2e/fixture.mjs <dir>     build it and print how to open the app on it (npm run demo does both)
 //
 // The end-to-end tests import createFixture().
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -366,11 +366,99 @@ function write(root, files) {
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString()
 const user = (login) => ({ login, avatarUrl: '' })
 
+const AUTHOR = {
+  GIT_AUTHOR_NAME: 'Mona Lisa',
+  GIT_AUTHOR_EMAIL: 'mona@example.com',
+  GIT_COMMITTER_NAME: 'Mona Lisa',
+  GIT_COMMITTER_EMAIL: 'mona@example.com',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+}
+
+/**
+ * Start a real run of the fixture's factory, with slow-agent.mjs in the place of the agent: `pace` is its
+ * milliseconds per step, `hold` the roles ("builder") that wait halfway through their work until released.
+ * Resolves to `{ release(role), stop() }`; `stop` ends the run and whatever it started.
+ */
+/** Where the slow agent of a fixture looks for the roles it must hold (see slow-agent.mjs). */
+const holdDirOf = (repo) => path.join(path.dirname(repo), 'hold')
+
+/** Make these roles of the slow agent wait halfway through their work, until `release(repo, role)`. */
+export function hold(repo, roles) {
+  fs.mkdirSync(holdDirOf(repo), { recursive: true })
+  for (const role of roles) fs.writeFileSync(path.join(holdDirOf(repo), role), '')
+}
+export const release = (repo, role) => fs.rmSync(path.join(holdDirOf(repo), role), { force: true })
+
+/**
+ * The environment in which a run of the fixture's factory uses slow-agent.mjs as its agent: for the app (whose
+ * Run button starts the run) and for a run started by hand.
+ */
+export function agentEnv(repo, pace = 1200) {
+  const { GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL } = AUTHOR
+  return { GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL, FACTORY_AGENT: 'claude', FACTORY_RUNNER: path.join(here, 'slow-agent.mjs'), SLOW_PACE: String(pace), SLOW_HOLD: holdDirOf(repo) }
+}
+
+export function startRun(repo, { pace = 1200, hold: roles = [], ticket = null } = {}) {
+  const holdDir = holdDirOf(repo)
+  hold(repo, roles)
+  // the run must not think it is inside an agent's session, whatever the tests themselves run in
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|CODEX|FACTORY_)/.test(k)))
+  const child = spawn(process.execPath, [path.join(repo, '.factory/cli.mjs'), 'run', ...(ticket ? [ticket] : [])], {
+    cwd: repo,
+    stdio: 'ignore',
+    env: { ...env, ...AUTHOR, ...agentEnv(repo, pace) },
+  })
+  return {
+    release: (role) => release(repo, role),
+    done: new Promise((resolve) => child.on('exit', resolve)),
+    stop: () => {
+      fs.rmSync(holdDir, { recursive: true, force: true })
+      child.kill('SIGTERM')
+    },
+  }
+}
+
 /**
  * Build the fixture in `dir` (which must be empty or absent). Returns what a launch needs:
  * the project folder, the environment that points the app at fake-gh, and the file the fake logs its calls to.
  */
-export function createFixture(dir, { factory = true } = {}) {
+/**
+ * Tickets from the weeks before, as their journal entries tell of them: each with the rows of what its agent runs
+ * took (see USAGE_COLUMNS in the factory's CLI). For the Usage view: models, rounds that were redone, a ticket
+ * that was deleted, one that Codex worked.
+ */
+function pastTickets() {
+  const sonnet = 'claude:claude-sonnet-5-5'
+  const opus = 'claude:claude-opus-5-5'
+  // [stage, round, by, result, secs, turns, input, cache read, cache write, output, cost]
+  const plan = (by, k = 1) => ['plan', 0, by, 'READY', 48 * k, 9, 2100 * k, 61000 * k, 9000 * k, 1900 * k, +(0.09 * k).toFixed(3)]
+  const build = (round, by, k = 1, result = 'READY') => ['build', round, by, result, 410 * k, 38, 5200 * k, 890000 * k, 41000 * k, 15800 * k, +(0.71 * k).toFixed(3)]
+  const review = (round, by, result, k = 1) => ['review', round, by, result, 95 * k, 14, 2600 * k, 180000 * k, 12000 * k, 3100 * k, +(0.17 * k).toFixed(3)]
+  const once = (by, k = 1) => [plan(by, k), build(1, by, k), review(1, by, 'PASS', k)]
+  const twice = (by, k = 1) => [plan(by, k), build(1, by, k), review(1, by, 'CHANGES', k), build(2, by, k * 0.6), review(2, by, 'PASS', k)]
+  return [
+    { days: 41, n: 12, title: 'Round prices to whole cents', usage: once(sonnet, 0.7) },
+    { days: 34, n: 13, title: 'Add product categories to the catalog', usage: twice(sonnet) },
+    { days: 33, n: 14, title: 'Validate the shipping address', usage: once(sonnet, 1.4) },
+    { days: 26, n: 15, title: 'Move pricing rules out of the cart', usage: [plan(opus, 2), build(1, opus, 2.2), review(1, opus, 'CHANGES', 2), build(2, opus, 1.5), review(2, opus, 'CHANGES', 2), build(3, opus, 1.1), review(3, opus, 'PASS', 2)] },
+    { days: 19, n: 16, title: 'Export orders as CSV', usage: [['plan', 0, 'codex:gpt-6.1-sol', 'READY', 61, 0, 48200, 0, 0, 0, 0], ['build', 1, 'codex:gpt-6.1-sol', 'READY', 520, 0, 612000, 0, 0, 0, 0], ['review', 1, 'codex:gpt-6.1-sol', 'PASS', 88, 0, 97400, 0, 0, 0, 0]] },
+    { days: 12, n: 17, title: 'Sync the cart across tabs', deleted: true, usage: [plan(sonnet), build(1, sonnet, 1.3), review(1, sonnet, 'CHANGES'), build(2, sonnet, 1, 'ERROR')] },
+    { days: 6, n: 18, title: 'Show stock levels on the product page', usage: once(sonnet, 1.1) },
+    { days: 3, n: 19, title: 'Send a receipt by email', usage: twice(sonnet, 1.2) },
+    { days: 1, n: 20, title: 'Remember the last used address', usage: once(sonnet, 0.8) },
+  ].map((t) => {
+    const at = new Date(Date.now() - t.days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const slug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').split('-').slice(0, 4).join('-')
+    const id = `${at.slice(0, 10)}-${t.deleted ? `deleted-ticket-0${t.n}` : slug}`
+    const title = t.deleted ? `Deleted ticket 0${t.n}: ${t.title}` : t.title
+    const body = t.deleted ? `## What changed\nTicket 0${t.n} was deleted for good while it was in Build, round 2.\n\n## Why\nTabs talking to each other turned out to need a server.` : `## What changed\n${t.title}.\n\n## Why\nA customer asked for it.`
+    const meta = [`id: ${id}`, `at: ${at}`, `title: ${JSON.stringify(title)}`, `kind: ${t.deleted ? 'decision' : 'feature'}`, `ticket: 0${t.n}-${slug}`, 'commits: []', 'files: []', `tags: ${JSON.stringify(t.deleted ? ['deleted', 'ticket'] : ['shop'])}`, `usage: ${JSON.stringify(t.usage)}`]
+    return { file: `${at.slice(0, 4)}/${id}.md`, text: `---\n${meta.join('\n')}\n---\n${body}\n` }
+  })
+}
+
+export function createFixture(dir, { factory = true, usage = false } = {}) {
   fs.mkdirSync(dir, { recursive: true })
   const origin = path.join(dir, 'origin.git')
   const repo = path.join(dir, 'shop')
@@ -458,6 +546,7 @@ export function createFixture(dir, { factory = true } = {}) {
       if (e.at) amend(path.join(repo, '.factory/journal'), e.args[1], (t) => t.replace(/^at: .*$/m, `at: ${e.at}`))
       if (e.gone) amend(path.join(repo, '.factory/journal'), e.args[1], (t) => t.replace(/^commits: .*\n/m, '').replace(/^title: /m, `commits: ["${e.gone}"]\ntitle: `))
     }
+    if (usage) for (const t of pastTickets()) write(path.join(repo, '.factory/journal'), { [t.file]: t.text })
     git('add', '-A')
     git('commit', '-qm', 'Journal: the VAT on the receipt, cents, rounding')
   }

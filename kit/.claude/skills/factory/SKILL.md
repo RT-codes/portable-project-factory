@@ -14,7 +14,8 @@ what it prints.
 - `/factory <anything else>` - run the CLI command it names, e.g. `/factory status` is
   `node .factory/cli.mjs status`. If the words are not a command, run `node .factory/cli.mjs help` and
   pick the command that does what the user asked:
-  - a request to build something: `new "<short imperative title>" --body "<the rest, verbatim>"`;
+  - a request to build something: `new "<short imperative title>" --body "<the rest, verbatim>"`, one
+    ticket per change that can be reviewed on its own, then `run --detach`;
   - `run`: always `run --detach` (a run outlives your command timeout), then `status` when asked.
 - When the CLI refuses, its message says why. Fix the cause or tell the user; never work around it, and
   never edit `.factory/jobs/` by hand.

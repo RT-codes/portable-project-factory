@@ -2,8 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import type { AgentCatalog, Doctor, DoctorItem, JournalEntry, JournalSection, LastRun, ModelOption, ModelSettings } from '../shared/api'
-import { ROLES, type FactoryState, type Job, type JobFile, type LocalSettings, type Role, type RoleConfig, type RoleSettings } from '../src/lib/types'
+import { ROLES, type FactoryState, type Job, type JobFile, type LocalSettings, type Role, type RoleConfig, type RoleSettings, type Work } from '../src/lib/types'
 import { run } from './exec'
+import { currentRun, liveOf, workOf } from './live'
 
 // The factory of a repo, as the app sees it: everything lives in .factory/. The app reads its files directly
 // (config.json, jobs/, journal/), asks its CLI (.factory/cli.mjs) to file tickets and check its health, and writes
@@ -42,22 +43,48 @@ async function readConfig(repo: string) {
   }
 }
 
+// A worktree's state takes a few git calls to read. While a run is alive it is read at every look, because it is
+// changing; a ticket that waits (blocked, or with no run) is read again only now and then.
+const WORK_TTL_MS = 15_000
+const worked = new Map<string, { at: number; work: Work | undefined }>()
+
+async function work(worktree: string, base: string, running: boolean): Promise<Work | undefined> {
+  const key = `${worktree}\n${base}`
+  const had = worked.get(key)
+  if (had && !running && Date.now() - had.at < WORK_TTL_MS) return had.work
+  const now = await workOf(worktree, base).catch(() => undefined)
+  if (worked.size > 500) worked.clear()
+  worked.set(key, { at: Date.now(), work: now })
+  return now
+}
+
 export async function factoryState(repo: string): Promise<FactoryState | null> {
   const config = await readConfig(repo)
   if (!config) return null
   const jobs: Job[] = []
   const jobsDir = path.join(dirOf(repo), 'jobs')
   const ids = await fs.readdir(jobsDir).catch(() => [] as string[])
-  for (const id of ids.sort()) {
-    try {
-      const job = JSON.parse(await fs.readFile(path.join(jobsDir, id, 'job.json'), 'utf8'))
-      job.files = await jobFiles(path.join(jobsDir, id))
-      jobs.push(job)
-    } catch {
-      /* not a ticket folder, or mid-write: the next poll gets it */
-    }
-  }
-  return { config, jobs }
+  const live = await currentRun(dirOf(repo))
+  await Promise.all(
+    ids.sort().map(async (id) => {
+      try {
+        const job: Job = JSON.parse(await fs.readFile(path.join(jobsDir, id, 'job.json'), 'utf8'))
+        job.files = await jobFiles(path.join(jobsDir, id))
+        // what the app adds to a ticket: what is happening on it now, and how far its work is
+        const [now, done] = await Promise.all([
+          liveOf(path.join(jobsDir, id), job, config, live).catch(() => undefined),
+          job.worktree ? work(path.join(repo, job.worktree), config.base_branch, !!live) : undefined,
+        ])
+        if (now) job.live = now
+        if (done) job.work = done
+        jobs.push(job)
+      } catch {
+        /* not a ticket folder, or mid-write: the next poll gets it */
+      }
+    })
+  )
+  jobs.sort((a, b) => a.id.localeCompare(b.id))
+  return { config, jobs, run: live }
 }
 
 export async function factoryFile(repo: string, job: string, rel: string): Promise<string> {
@@ -101,6 +128,42 @@ export async function factoryCreate(repo: string, title: string, body: string): 
   if (typeof title !== 'string' || !title.trim()) throw new Error('a ticket needs a title')
   const res = await cli(repo, ['new', title.trim()], { input: typeof body === 'string' ? body : '' })
   return res.stdout.toString('utf8').trim().split('\n').at(-1)?.trim() ?? ''
+}
+
+/**
+ * Ask the CLI to do something, and say why in its own words when it refuses. A factory older than the app may
+ * not know the command: that is said as what it is, with what to do about it.
+ */
+async function act(repo: string, args: string[], timeoutMs?: number): Promise<string> {
+  const res = await cli(repo, args, { allowFail: true, timeoutMs })
+  if (res.code === 0) return res.stdout.toString('utf8').trim()
+  const why = (res.stderr || res.stdout.toString('utf8')).trim().split('\n').find((l) => l.trim()) ?? `the factory's CLI exited ${res.code}`
+  if (/unknown command/.test(why)) throw new Error(`This repo's factory is older than the app and cannot ${args[0]} yet. Update it: npx -y github:RT-codes/portable-project-factory --update`)
+  throw new Error(why.replace(/^(error|refused):\s*/i, '').replace(/^./, (c) => c.toUpperCase()))
+}
+
+/** Start a run in the background. It outlives the app: closing the window does not stop the work. */
+export async function factoryRun(repo: string): Promise<void> {
+  await act(repo, ['run', '--detach'])
+}
+
+export async function factoryPause(repo: string): Promise<void> {
+  await act(repo, ['cancel'])
+}
+
+/** Land a finished ticket. The checks may run on the way, so this can take as long as they do. */
+export async function factoryLand(repo: string, job: string): Promise<string> {
+  if (typeof job !== 'string' || !/^[\w.-]+$/.test(job)) throw new Error('not a ticket')
+  const config = await readConfig(repo)
+  const out = await act(repo, ['land', job], ((config?.check_timeout_s as number) || 1800) * 1000 + 120_000)
+  // its last line says what happened, after the ticket's id
+  return (out.split('\n').at(-1) ?? '').replace(/^[\w.-]+:\s*/, '').replace(/^./, (c) => c.toUpperCase())
+}
+
+export async function factoryDelete(repo: string, job: string, reason: string): Promise<void> {
+  if (typeof job !== 'string' || !/^[\w.-]+$/.test(job)) throw new Error('not a ticket')
+  if (typeof reason !== 'string' || !reason.trim()) throw new Error('Say why: the journal keeps the reason.')
+  await act(repo, ['delete', job, '-m', reason.trim()])
 }
 
 export async function doctor(repo: string, appVersion: string): Promise<Doctor> {

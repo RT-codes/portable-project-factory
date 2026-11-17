@@ -1,6 +1,6 @@
 {
   "name": "portable-project-factory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Installs the Factory workflow into a git repo: a ticket pipeline for any coding agent, a journal of why things changed, and the Factory desktop app.",
   "type": "module",
   "bin": {

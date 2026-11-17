@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import { agentArgs, chooseAgent, parseEntry, roleSettings } from '../.factory/cli.mjs'
-import { PASS_WITH_JOURNAL, cli, factoryRepo, git } from './helpers.mjs'
+import { PASS_WITH_JOURNAL, cli, factoryRepo, git, lastLine } from './helpers.mjs'
 
 const BUILD = { say: 'READY\n\n## Summary\n- Added hello.txt', write: { 'hello.txt': 'hello\n' }, commit: true }
 const ID = '001-add-a-greeting'
@@ -84,7 +84,7 @@ test('a full run takes a ticket to done and commits its journal entry on the bra
   s = JSON.parse(cli(f.dir, ['status', '--json'], { env: f.env }).out)
   assert.deepEqual([s.waiting.length, s.tickets[0].merged], [0, true])
   assert.ok(fs.existsSync(path.join(f.dir, files[0])))
-  assert.doesNotMatch(cli(f.dir, ['context'], { env: f.env }).out, /ready to merge/)
+  assert.doesNotMatch(cli(f.dir, ['context'], { env: f.env }).out, /ready to land/)
 })
 
 test('reviewer CHANGES sends the ticket back to build; PASS in round 2 finishes it', () => {
@@ -266,4 +266,155 @@ test('agent choice, role settings and command lines', () => {
   assert.equal(builder[builder.indexOf('--tools') + 1], 'Read,Grep,Glob,Edit,Write,Bash')
   assert.ok(!builder.includes('--model') && !builder.includes('--effort'))
   assert.deepEqual(args.slice(-2), ['--add-dir', '/r/.factory/jobs/1'])
+})
+
+test('a usage limit does not fail the ticket: the run waits and takes the stage up again', () => {
+  const f = factoryRepo({ script: { planner: [{ limit: true }, 'READY'], builder: [BUILD], reviewer: [PASS_WITH_JOURNAL] } })
+  cli(f.dir, ['new', 'Add a greeting'], { env: f.env })
+  const r = cli(f.dir, ['run'], { env: { ...f.env, FACTORY_WAIT_MS: '300' } })
+  assert.equal(r.code, 0, r.err)
+  assert.match(r.out, /planner stopped \(a usage limit was reached\); waiting until \d\d:\d\d/)
+  const job = f.job(ID)
+  // never blocked: it went on by itself, and its activity says what happened
+  assert.equal(job.stage, 'done')
+  assert.equal(job.activity.some((a) => a.kind === 'blocked'), false)
+  const waited = job.activity.find((a) => a.kind === 'waiting')
+  assert.match(waited.text, /Plan stopped: a usage limit was reached \(claude:fake-sonnet-1\)\. The run tries again at/)
+  assert.equal(f.calls().filter((c) => c.role === 'planner').length, 2)
+  // the run's file no longer says it waits
+  assert.equal(JSON.parse(cli(f.dir, ['status', '--json'], { env: f.env }).out).run, null)
+
+  // what every run took is in the ticket's journal entry, the failed one included, with the token kinds apart
+  const dir = path.join(f.dir, '.factory', 'worktrees', ID, '.factory', 'journal', String(new Date().getUTCFullYear()))
+  const usage = parseEntry(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8')).meta.usage
+  assert.deepEqual(usage.map((u) => [u[0], u[1], u[3]]), [['plan', 0, 'WAIT'], ['plan', 0, 'READY'], ['build', 1, 'READY'], ['review', 1, 'PASS']])
+  assert.deepEqual(usage[1].slice(5), [3, 10, 200, 30, 60, 0.013])
+  assert.deepEqual(usage[0].slice(5), [1, 5, 100, 0, 2, 0.002])
+})
+
+test('a service that does not answer is tried again a few times, then the ticket is blocked', () => {
+  const f = factoryRepo({ script: { planner: [{ overloaded: true }] } })
+  cli(f.dir, ['new', 'Add a greeting'], { env: f.env })
+  const r = cli(f.dir, ['run'], { env: { ...f.env, FACTORY_WAIT_MS: '50' } })
+  assert.equal(r.code, 0, r.err)
+  const job = f.job(ID)
+  assert.equal(job.stage, 'blocked')
+  assert.equal(job.activity.filter((a) => a.kind === 'waiting').length, 3)
+  assert.equal(f.calls().length, 4)
+  assert.match(job.blocked_reason, /planner \(claude:fake-sonnet-1\) failed: exited 1/)
+})
+
+test('checks, for an agent: a line per check that passes, the end of one that fails, all of it in a file', () => {
+  const noisy = 'node -e "for (let i = 1; i <= 200; i++) console.log(\'line \' + i); process.exit(3)"'
+  const f = factoryRepo({ checks: ['node --version', noisy, 'node -e "console.log(\'never run\')"'] })
+  const r = cli(f.dir, ['checks'], { env: f.env })
+  assert.equal(r.code, 1)
+  assert.match(r.out, /^ok    node --version \(/)
+  assert.match(r.out, /FAIL  node -e .* \(exit 3, [\d.]+s\), the last 60 of 200 lines:/)
+  assert.match(r.out, /\nline 200\n/)
+  assert.doesNotMatch(r.out, /\nline 100\n/)
+  assert.doesNotMatch(r.out, /never run/)
+  assert.match(lastLine(r.out), /^CHECKS: FAIL$/)
+  // nothing is hidden: the whole output is one read away, and it is not something to commit
+  const log = fs.readFileSync(path.join(f.dir, '.factory', 'cache', 'checks.log'), 'utf8')
+  assert.match(log, /\nline 100\n/)
+  assert.equal(git(f.dir, 'status', '--porcelain', '--', '.factory/cache'), '')
+  const ok = factoryRepo({ checks: ['node --version'] })
+  const p = cli(ok.dir, ['checks'], { env: ok.env })
+  assert.equal(p.code, 0)
+  assert.match(lastLine(p.out), /^CHECKS: PASS$/)
+})
+
+const finished = (extra = {}) => {
+  const f = factoryRepo({ script: { planner: ['READY'], builder: [BUILD], reviewer: [PASS_WITH_JOURNAL] }, ...extra })
+  cli(f.dir, ['new', 'Add a greeting'], { env: f.env })
+  assert.equal(cli(f.dir, ['run'], { env: f.env }).code, 0)
+  assert.equal(f.job(ID).stage, 'done')
+  return f
+}
+const onMain = (f, file, text, message) => {
+  fs.writeFileSync(path.join(f.dir, file), text)
+  git(f.dir, 'add', '-A')
+  git(f.dir, 'commit', '-q', '-m', message)
+}
+
+test('land brings a finished ticket into the base branch and clears up after it', () => {
+  const f = finished()
+  assert.match(cli(f.dir, ['status'], { env: f.env }).out, /ready to land \(`land 001`\)/)
+  const r = cli(f.dir, ['land', '1'], { env: f.env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(lastLine(r.out), /^001-add-a-greeting: landed in main \([0-9a-f]{7}\)$/)
+  // main has the work and its journal entry; the branch and the worktree are gone; the ticket says where it went
+  assert.equal(fs.readFileSync(path.join(f.dir, 'hello.txt'), 'utf8'), 'hello\n')
+  assert.match(git(f.dir, 'log', '--format=%s', 'main'), /Journal: Add a greeting file/)
+  assert.equal(git(f.dir, 'branch', '--list', `factory/${ID}`), '')
+  assert.equal(fs.existsSync(path.join(f.dir, '.factory', 'worktrees', ID)), false)
+  const job = f.job(ID)
+  assert.equal(job.landed.into, 'main')
+  assert.equal(job.worktree, undefined)
+  assert.doesNotMatch(cli(f.dir, ['status'], { env: f.env }).out, /ready to land/)
+  assert.match(cli(f.dir, ['land', '1'], { env: f.env }).err, /has landed already/)
+})
+
+test('land takes in a base branch that moved, and checks the result before the base moves', () => {
+  // the checks pass on the ticket alone and on main alone, and fail on the two together
+  const both = 'node -e "const fs=require(\'fs\'); process.exit(fs.existsSync(\'hello.txt\') && fs.existsSync(\'other.txt\') ? 1 : 0)"'
+  const f = finished({ checks: [both] })
+  onMain(f, 'other.txt', 'other\n', 'Something else')
+  const before = git(f.dir, 'rev-parse', 'main')
+  const r = cli(f.dir, ['land', '1'], { env: f.env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(r.out, /main has moved; merging it into factory\/001-add-a-greeting/)
+  assert.match(lastLine(r.out), /the checks fail with main merged in → build \(round 2\)/)
+  // main did not move: it never holds what the checks did not pass
+  assert.equal(git(f.dir, 'rev-parse', 'main'), before)
+  const job = f.job(ID)
+  assert.deepEqual([job.stage, job.round], ['build', 2])
+  assert.match(fs.readFileSync(path.join(f.dir, '.factory', 'jobs', ID, 'feedback-1.md'), 'utf8'), /The checks fail with main merged in[\s\S]*FAIL  node -e/)
+})
+
+test('a ticket that conflicts with the base goes back to the builder, and lands once it is resolved', () => {
+  const resolve = { say: 'READY\n\n## Round 2\n- Kept both greetings', write: { 'hello.txt': 'hello\nhi\n' }, commit: true }
+  const f = factoryRepo({ script: { planner: ['READY'], builder: [BUILD, resolve], reviewer: [PASS_WITH_JOURNAL] } })
+  cli(f.dir, ['new', 'Add a greeting'], { env: f.env })
+  cli(f.dir, ['run'], { env: f.env })
+  onMain(f, 'hello.txt', 'hi\n', 'Another greeting')
+  let r = cli(f.dir, ['land', '1'], { env: f.env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(lastLine(r.out), /1 file conflicts with main → build \(round 2\); `run` has the builder resolve it/)
+  const feedback = fs.readFileSync(path.join(f.dir, '.factory', 'jobs', ID, 'feedback-1.md'), 'utf8')
+  assert.match(feedback, /# Conflicts with main[\s\S]*- `hello.txt`/)
+  assert.match(fs.readFileSync(path.join(f.dir, '.factory', 'worktrees', ID, 'hello.txt'), 'utf8'), /<<<<<<< /)
+
+  // the pipeline does the rest: the builder is pointed at the feedback, the checks and the reviewer judge the result
+  assert.equal(cli(f.dir, ['run'], { env: f.env }).code, 0)
+  assert.match(f.calls().filter((c) => c.role === 'builder')[1].prompt, /The user left feedback: read feedback-1\.md/)
+  assert.equal(f.job(ID).stage, 'done')
+  r = cli(f.dir, ['land', '1'], { env: f.env })
+  assert.equal(r.code, 0, r.err)
+  assert.match(lastLine(r.out), /landed in main/)
+  assert.equal(fs.readFileSync(path.join(f.dir, 'hello.txt'), 'utf8'), 'hello\nhi\n')
+  // one ticket, one journal entry, however many times it finished
+  const year = path.join(f.dir, '.factory', 'journal', String(new Date().getUTCFullYear()))
+  assert.equal(fs.readdirSync(year).length, 1)
+  assert.equal(parseEntry(fs.readFileSync(path.join(year, fs.readdirSync(year)[0]), 'utf8')).meta.usage.length, 5)
+})
+
+test('land refuses what it should not touch, and auto_land lands as tickets finish', () => {
+  const f = finished()
+  // work in the main checkout that the landing would overwrite stays untouched
+  fs.writeFileSync(path.join(f.dir, 'hello.txt'), 'mine\n')
+  const r = cli(f.dir, ['land', '1'], { env: f.env })
+  assert.equal(r.code, 1)
+  assert.match(r.err, /could not move main to factory\/001-add-a-greeting/)
+  assert.equal(fs.readFileSync(path.join(f.dir, 'hello.txt'), 'utf8'), 'mine\n')
+  assert.equal(f.job(ID).landed, undefined)
+  assert.match(cli(f.dir, ['land', '9'], { env: f.env }).err, /no ticket '9'/)
+
+  const auto = factoryRepo({ script: { planner: ['READY'], builder: [BUILD], reviewer: [PASS_WITH_JOURNAL] }, config: (c) => (c.auto_land = true) })
+  cli(auto.dir, ['new', 'Add a greeting'], { env: auto.env })
+  const run = cli(auto.dir, ['run'], { env: auto.env })
+  assert.match(run.out, /001-add-a-greeting: landed in main/)
+  assert.equal(auto.job(ID).landed.into, 'main')
+  assert.equal(fs.readFileSync(path.join(auto.dir, 'hello.txt'), 'utf8'), 'hello\n')
 })

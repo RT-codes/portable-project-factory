@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 // @ts-expect-error -- a plain script, shared with `npm run demo`
-import { createFixture } from './fixture.mjs'
+import { agentEnv, createFixture } from './fixture.mjs'
 
 export interface Fixture {
   repo: string
@@ -20,6 +20,8 @@ export interface Fixture {
 interface Options {
   /** install the factory into the project (default true) */
   factory: boolean
+  /** give the project weeks of finished tickets with what their agent runs took, for the Usage view (default false) */
+  usage: boolean
   /** 'fake' answers like GitHub would; 'missing' is a machine without the gh CLI */
   gh: 'fake' | 'missing'
   /** start with the project open (default true); false is a first run */
@@ -29,12 +31,13 @@ interface Options {
 /** A test gets the app open on a fresh project, and that project. */
 export const test = base.extend<Options & { fixture: Fixture; electronApp: ElectronApplication; page: Page }>({
   factory: [true, { option: true }],
+  usage: [false, { option: true }],
   gh: ['fake', { option: true }],
   open: [true, { option: true }],
 
-  fixture: async ({ factory }, use) => {
+  fixture: async ({ factory, usage }, use) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-app-'))
-    const f = createFixture(dir, { factory })
+    const f = createFixture(dir, { factory, usage })
     await use({
       repo: f.repo,
       headSha: f.headSha,
@@ -50,7 +53,8 @@ export const test = base.extend<Options & { fixture: Fixture; electronApp: Elect
       // @ts-expect-error -- for the launcher below, not for tests
       // nothing a test deletes goes to the real trash, and nothing it opens starts a real editor
       // FACTORY_APP_HOME: where the app looks for the agent CLIs' own settings (never this machine's real ones)
-      env: { ...f.env, FACTORY_APP_NO_TRASH: '1', FACTORY_APP_OPEN_LOG: path.join(dir, 'opened.log'), FACTORY_APP_HOME: path.join(dir, 'home') },
+      // a run started from the app uses the slow stand-in for an agent, never a real one
+      env: { ...f.env, ...agentEnv(f.repo, 60), FACTORY_APP_NO_TRASH: '1', FACTORY_APP_OPEN_LOG: path.join(dir, 'opened.log'), FACTORY_APP_HOME: path.join(dir, 'home') },
     })
     fs.rmSync(dir, { recursive: true, force: true })
   },

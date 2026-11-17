@@ -7,6 +7,7 @@
 	import LivePill from '$lib/components/LivePill.svelte'
 	import { factory } from '$lib/factory.svelte'
 	import type { Job } from '$lib/types'
+	import { api } from '../api'
 	import { app } from '../app.svelte'
 	import { getTile } from '../pane'
 	import EmptyState from '../components/EmptyState.svelte'
@@ -15,6 +16,16 @@
 	// The factory's board. `route.path` may name a ticket to open.
 	let { now }: { now: number } = $props()
 	const tile = getTile()
+
+	const project = $derived(app.project!)
+	/** an action on the factory, then a look at what it changed, without waiting for the next poll */
+	async function act<T>(done: Promise<T>): Promise<T> {
+		try {
+			return await done
+		} finally {
+			void factory.refresh()
+		}
+	}
 
 	// a ticket's branch against the factory's base branch, in the diff viewer
 	function review(job: Job) {
@@ -33,7 +44,7 @@
 		</span>
 		<div class="ms-auto shrink-0"><LivePill {now} hint="Can't read .factory/" /></div>
 	</header>
-	<Board snap={factory.state} {now} onreview={review} ticket={tile.route.path ?? null} />
+	<Board snap={factory.state} {now} onreview={review} ticket={tile.route.path ?? null} onrun={() => act(api.factoryRun(project))} onpause={() => act(api.factoryPause(project))} ondelete={(job, reason) => act(api.factoryDelete(project, job.id, reason))} onland={(job) => act(api.factoryLand(project, job.id))} />
 {:else if factory.error}
 	<EmptyState icon={TriangleAlertIcon} title="Can't read the factory">
 		<p class="font-mono text-xs text-destructive/90">{factory.error}</p>

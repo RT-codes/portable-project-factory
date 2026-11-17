@@ -11,7 +11,11 @@
 	import XIcon from '@lucide/svelte/icons/x'
 	import { EMPTY_TREE, WORKTREE, type Compare, type HistoryScope, type LogCommit, type Ref, type Worktree } from '$shared/api'
 	import { Button } from '$lib/components/ui/button/index.js'
+	import { factory } from '$lib/factory.svelte'
 	import { ago, stamp } from '$lib/format'
+	import { stageOf } from '$lib/board'
+	import type { Job } from '$lib/types'
+	import WorkStat from '$lib/components/WorkStat.svelte'
 	import { cn } from '$lib/utils'
 	import { api, message } from '../api'
 	import { app } from '../app.svelte'
@@ -23,6 +27,10 @@
 	// History: the repo's commits as a graph, with what is checked out where. The worktrees are listed beside it
 	// (the checkout the app has open, and any others, such as the factory's per-ticket ones), and the scope
 	// buttons choose whose history is drawn: this checkout's, the local branches', the remote's, or all of it.
+	//
+	// The graph also draws history that is still being made: work a worktree holds and has not committed, and a
+	// ticket a run is working on, sit above the commit they grow from, on a dashed line. So a ticket shows up here
+	// the moment it is picked up, its worktree the moment it exists, and its commits as they land.
 	let { now }: { now: number } = $props()
 	const tile = getTile()
 	const project = $derived(app.project!)
@@ -44,19 +52,30 @@
 	let selected = $state<string | null>(null)
 	let scroller = $state<HTMLElement | null>(null)
 
-	async function load() {
+	// what was drawn at the last look, to tell which rows are new: null until the first look at a history
+	let seen: { key: string; rows: Set<string> } | null = null
+	/** rows that appeared since the last look: they arrive with a flash */
+	let arrived = $state(new Set<string>())
+	let busy = false
+
+	/** `quiet`: a look to keep up with what is happening, which changes nothing on screen unless the repo changed */
+	async function load(quiet = false) {
+		if (quiet && busy) return
 		const key = `${project}\n${scope}\n${limit}`
-		loading = true
+		busy = true
+		if (!quiet) loading = true
 		try {
 			const [log, wt] = await Promise.all([api.history(project, scope, limit), api.worktrees(project)])
 			if (key !== `${project}\n${scope}\n${limit}`) return
-			commits = log
-			trees = wt
+			// the same history again is not a change: nothing is redrawn for it
+			if (JSON.stringify(log) !== JSON.stringify(commits)) commits = log
+			if (JSON.stringify(wt) !== JSON.stringify(trees)) trees = wt
 			error = null
 		} catch (e) {
-			error = message(e)
+			if (!quiet) error = message(e)
 		} finally {
-			loading = false
+			busy = false
+			if (!quiet) loading = false
 		}
 	}
 	$effect(() => {
@@ -64,8 +83,69 @@
 		void load()
 	})
 	$effect(() => app.onFocus(() => void load()))
+	// keep up: often while a run is making history, now and then otherwise
+	const making = $derived(!!factory.state?.run)
+	$effect(() => {
+		const timer = setInterval(() => !document.hidden && void load(true), making ? 1500 : 6000)
+		return () => clearInterval(timer)
+	})
 
-	const graph = $derived(commits ? lanesOf(commits) : null)
+	// ---- history in the making: what is not a commit yet, drawn above the commit it grows from
+	interface Wip {
+		key: string
+		parent: string
+		tree: Worktree | null
+		job: Job | null
+	}
+	const WIP = 'wip:'
+	const jobs = $derived(factory.state?.jobs ?? [])
+	const wips = $derived.by((): Wip[] => {
+		if (!commits || scope === 'remote') return []
+		const known = new Set(commits.map((c) => c.sha))
+		const list: Wip[] = []
+		for (const w of trees) {
+			if (!w.head || w.bare || w.prunable || !known.has(w.head)) continue
+			const job = (w.branch && jobs.find((j) => j.branch === w.branch)) || null
+			// uncommitted work, or a run at work in it right now (a worktree made a second ago has nothing in it yet)
+			if (w.changes || job?.live?.state === 'running') list.push({ key: WIP + w.path, parent: w.head, tree: w, job })
+		}
+		// a ticket being planned has no branch yet: it will grow from the base branch
+		const base = factory.state?.config.base_branch
+		const tip = commits.find((c) => c.refs.some((r) => r.kind === 'branch' && r.name === base))?.sha
+		if (tip) for (const job of jobs) if (job.live?.state === 'running' && !job.worktree) list.push({ key: `${WIP}ticket:${job.id}`, parent: tip, tree: null, job })
+		// the checkout that is open keeps its line; the others branch off it
+		return list.sort((a, b) => Number(!!b.tree?.current) - Number(!!a.tree?.current) || a.key.localeCompare(b.key))
+	})
+	const wipOf = $derived(new Map(wips.map((w) => [w.key, w])))
+	/** branches that have no commit of their own yet: the row of their work stands for them, not a label on the base commit */
+	const unborn = $derived(new Set(wips.filter((w) => w.tree?.branch && !w.tree.current && w.job?.work?.commits === 0).map((w) => w.tree!.branch!)))
+	/** the commits, with what is in the making placed above the commit it grows from */
+	const drawn = $derived.by((): LogCommit[] | null => {
+		if (!commits) return null
+		const above = new Map<string, Wip[]>()
+		for (const w of wips) above.set(w.parent, [...(above.get(w.parent) ?? []), w])
+		return commits.flatMap((c) => [...(above.get(c.sha) ?? []).map((w): LogCommit => ({ sha: w.key, parents: [c.sha], subject: '', author: '', date: '', refs: [] })), c])
+	})
+	$effect(() => {
+		if (!drawn) return
+		const key = `${project}\n${scope}`
+		const rows = new Set(drawn.map((c) => c.sha))
+		const before = seen
+		seen = { key, rows }
+		// the first look at a history is not news, and neither is a longer page of it
+		if (!before || before.key !== key) return
+		const fresh = new Set([...rows].filter((sha) => !before.rows.has(sha)))
+		if (fresh.size === 0 || fresh.size > 20) return
+		arrived = fresh
+	})
+
+	function openWip(w: Wip) {
+		if (w.job) tile.openBeside({ view: 'board', path: w.job.id })
+		else if (w.tree?.current) tile.openBeside({ view: 'changes', source: { base: 'HEAD', head: WORKTREE } })
+		else if (w.tree?.head) reveal(w.tree.head)
+	}
+
+	const graph = $derived(drawn ? lanesOf(drawn) : null)
 	const graphWidth = $derived(Math.max(1, Math.min(graph?.width ?? 1, 14)) * LANE_W)
 	/** the worktrees that have each commit checked out */
 	const checkedOut = $derived.by(() => {
@@ -141,7 +221,7 @@
 					</button>
 				{/each}
 			</div>
-			<Button variant="ghost" size="icon-sm" onclick={load} aria-label="Refresh"><RefreshCwIcon class={cn(loading && 'animate-spin')} /></Button>
+			<Button variant="ghost" size="icon-sm" onclick={() => load()} aria-label="Refresh"><RefreshCwIcon class={cn(loading && 'animate-spin')} /></Button>
 		</div>
 	</header>
 
@@ -197,32 +277,69 @@
 						{scope === 'remote' ? 'No remote branches here. Fetch from a remote to see them.' : 'No commits yet.'}
 					</p>
 				{:else}
-					{#if here?.changes && scope !== 'remote'}
-						<button
-							type="button"
-							class="flex w-full items-center gap-3 border-b border-dashed px-3 text-left text-sm hover:bg-accent/40"
-							style:height="{ROW_H}px"
-							onclick={() => tile.openBeside({ view: 'changes', source: { base: 'HEAD', head: WORKTREE } })}
-						>
-							<span class="flex shrink-0 items-center" style:width="{graphWidth}px">
-								<span class="size-2.5 rounded-full border-2 border-dashed border-tone-amber" style:margin-left="{LANE_W / 2 - 5}px"></span>
-							</span>
-							<!-- one line, whatever the width: the row has a set height -->
-							<span class="shrink-0 whitespace-nowrap text-tone-amber">Uncommitted changes</span>
-							<span class="min-w-0 truncate text-xs text-muted-foreground">{here.changes} {here.changes === 1 ? 'file' : 'files'}, not in any commit yet</span>
-						</button>
-					{/if}
 					<ol>
 						{#each graph.rows as row (row.commit.sha)}
 							{@const c = row.commit}
-							{@const at = checkedOut.get(c.sha) ?? []}
+							<!-- a worktree drawn as a row of its own (work in the making) is not named again on its commit -->
+							{@const at = (checkedOut.get(c.sha) ?? []).filter((w) => w.current || !wipOf.has(WIP + w.path))}
+							{@const wip = wipOf.get(c.sha)}
+							{#if wip}
+								{@const job = wip.job}
+								{@const live = job?.live?.state === 'running' ? job.live : null}
+								{@const stage = job && factory.state ? stageOf(factory.state.config, job.stage) : undefined}
+								<li>
+									<button
+										type="button"
+										class={cn('flex w-full items-center gap-3 px-3 text-left text-sm hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none', arrived.has(c.sha) && 'row-new row-in')}
+										style:height="{ROW_H}px"
+										data-wip={job?.id ?? wip.tree?.name}
+										title={wip.tree ? `${wip.tree.branch ?? 'detached'} in ${wip.tree.path}` : undefined}
+										data-wip-live={live ? 'running' : undefined}
+										onclick={() => openWip(wip)}
+									>
+										<svg width={graphWidth} height={ROW_H} class="shrink-0 overflow-visible" aria-hidden="true" fill="none" stroke-width="1.75">
+											{#each row.through as lane (lane)}<path d={pathThrough(lane)} stroke={laneColor(lane)} />{/each}
+											{#each row.to as lane, i (i)}<path d={pathOut(row.lane, lane)} stroke={laneColor(row.lane)} class={cn(live && 'wip-line')} stroke-dasharray="3 3" />{/each}
+											{#if live}<circle cx={dotX(row.lane)} cy={ROW_H / 2} r="5" fill={laneColor(row.lane)} class="wip-dot" stroke="none" />{/if}
+											<circle cx={dotX(row.lane)} cy={ROW_H / 2} r="4.5" fill="var(--background)" stroke={laneColor(row.lane)} stroke-dasharray="2.5 2" />
+										</svg>
+										<span class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+											{#if job}
+												<span class="inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-primary/50 bg-primary/10 px-1.5 font-mono text-[0.6875rem] font-medium text-primary">
+													{#if live}<LoaderIcon class="size-3 animate-spin" />{/if}#{String(job.number).padStart(3, '0')}
+												</span>
+												{#if !wip.tree}
+													<span class="inline-flex h-5 shrink-0 items-center rounded-md border border-dashed px-1.5 text-[0.6875rem] text-muted-foreground" title="A ticket gets its branch and worktree when its build starts. Until then it is planned in the main checkout.">no branch yet</span>
+												{/if}
+												<span class="min-w-0 shrink truncate">{job.title}</span>
+												<span class="min-w-[30%] flex-1 truncate text-xs text-muted-foreground">
+													{#if live}
+														<span class="font-medium text-primary">{stage?.label ?? job.stage}</span>
+														· {live.step?.text ?? 'starting'}
+													{:else}
+														{wip.tree?.changes} {wip.tree?.changes === 1 ? 'file' : 'files'} not in any commit yet
+													{/if}
+												</span>
+											{:else}
+												<!-- one line, whatever the width: the row has a set height -->
+												<span class="shrink-0 whitespace-nowrap text-tone-amber">Uncommitted changes{wip.tree?.current ? '' : ` in ${wip.tree?.name}`}</span>
+												<span class="min-w-0 truncate text-xs text-muted-foreground">{wip.tree?.changes} {wip.tree?.changes === 1 ? 'file' : 'files'}, not in any commit yet</span>
+											{/if}
+										</span>
+										{#if job?.work}
+											<span class="hidden shrink-0 text-xs text-muted-foreground @2xl/pane:flex"><WorkStat work={job.work} /></span>
+										{/if}
+									</button>
+								</li>
+							{:else}
 							<li>
 								<button
 									type="button"
 									class={cn(
 										'flex w-full items-center gap-3 px-3 text-left hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none',
 										selected === c.sha && 'bg-accent/70',
-										at.some((w) => w.current) && selected !== c.sha && 'bg-primary/5'
+										at.some((w) => w.current) && selected !== c.sha && 'bg-primary/5',
+										arrived.has(c.sha) && 'row-new row-in'
 									)}
 									style:height="{ROW_H}px"
 									data-commit={c.sha}
@@ -246,13 +363,13 @@
 									<span class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
 										{#each at as w (w.path)}
 											<span
-												class={cn('inline-flex h-5 max-w-40 min-w-10 items-center gap-1 rounded-md border px-1.5 text-[0.6875rem] font-medium', w.current ? 'border-primary/60 bg-primary/15 text-primary' : 'border-foreground/20 bg-muted text-foreground/80')}
+												class={cn('inline-flex h-5 max-w-40 items-center gap-1 rounded-md border px-1.5 text-[0.6875rem] font-medium', w.current ? 'shrink-0' : 'min-w-10', w.current ? 'border-primary/60 bg-primary/15 text-primary' : 'border-foreground/20 bg-muted text-foreground/80')}
 												title="Checked out in {w.path}"
 											>
 												<FolderGitIcon class="size-3 shrink-0" /><span class="truncate">{w.current ? 'HEAD' : w.name}</span>
 											</span>
 										{/each}
-										{#each c.refs as ref (ref.kind + ref.name)}
+										{#each c.refs.filter((r) => r.kind !== 'branch' || !unborn.has(r.name)) as ref (ref.kind + ref.name)}
 											<span class={cn('inline-flex h-5 max-w-56 min-w-10 items-center gap-1 rounded-md border px-1.5 font-mono text-[0.6875rem]', refTone[ref.kind], ref.head && 'font-semibold')}>
 												{#if ref.kind === 'tag'}<TagIcon class="size-3 shrink-0" />{:else}<GitBranchIcon class="size-3 shrink-0" />{/if}
 												<span class="truncate">{ref.name}</span>
@@ -267,6 +384,7 @@
 									</span>
 								</button>
 							</li>
+							{/if}
 						{/each}
 					</ol>
 					{#if commits.length >= limit}

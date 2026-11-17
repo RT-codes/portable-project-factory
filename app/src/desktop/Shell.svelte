@@ -11,6 +11,7 @@
 	import GitGraphIcon from '@lucide/svelte/icons/git-graph'
 	import HouseIcon from '@lucide/svelte/icons/house'
 	import KeyboardIcon from '@lucide/svelte/icons/keyboard'
+	import ChartColumnIcon from '@lucide/svelte/icons/chart-column'
 	import NotebookTextIcon from '@lucide/svelte/icons/notebook-text'
 	import PanelLeftCloseIcon from '@lucide/svelte/icons/panel-left-close'
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open'
@@ -88,6 +89,7 @@
 		{ view: 'code', label: 'Code', icon: FolderTreeIcon, count: null },
 		{ view: 'history', label: 'History', icon: GitGraphIcon, count: null, off: info ? !info.isGit : false },
 		{ view: 'journal', label: 'Journal', icon: NotebookTextIcon, count: null },
+		{ view: 'usage', label: 'Usage', icon: ChartColumnIcon, count: null },
 		{ view: 'agents', label: 'Agents', icon: BotIcon, count: agents.drafts.size || null, alert: true },
 	])
 

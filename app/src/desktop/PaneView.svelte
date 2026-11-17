@@ -25,6 +25,8 @@
 	import HomeView from './views/HomeView.svelte'
 	import IssuesView from './views/IssuesView.svelte'
 	import JournalView from './views/JournalView.svelte'
+	import UsageView from './views/UsageView.svelte'
+	import ChartColumnIcon from '@lucide/svelte/icons/chart-column'
 	import ModelsView from './views/ModelsView.svelte'
 	import PullsView from './views/PullsView.svelte'
 	import SettingsView from './views/SettingsView.svelte'
@@ -57,6 +59,7 @@
 		{ view: 'code', label: 'Code', icon: FolderTreeIcon, count: null },
 		{ view: 'history', label: 'History', icon: GitGraphIcon, count: null, off: app.info ? !app.info.isGit : false },
 		{ view: 'journal', label: 'Journal', icon: NotebookTextIcon, count: null },
+		{ view: 'usage', label: 'Usage', icon: ChartColumnIcon, count: null },
 		{ view: 'agents', label: 'Agents', icon: BotIcon, count: null },
 	])
 </script>
@@ -102,6 +105,8 @@
 	<HistoryView {now} />
 {:else if pane.route.view === 'journal'}
 	<JournalView {now} />
+{:else if pane.route.view === 'usage'}
+	<UsageView />
 {:else if pane.route.view === 'guide'}
 	<GuideView />
 {:else if pane.route.view === 'models'}
